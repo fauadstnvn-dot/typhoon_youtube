@@ -239,6 +239,15 @@ function vg_clean($s) {
     return str_replace(['<', '>'], ['‹', '›'], (string)$s);
 }
 
+function vg_strip_accents($s) {
+    $s = str_replace(['đ', 'Đ'], ['d', 'D'], (string)$s);
+    if (class_exists('Normalizer')) {
+        $n = Normalizer::normalize($s, Normalizer::FORM_D);
+        if (is_string($n)) return preg_replace('/\p{Mn}+/u', '', $n);
+    }
+    return $s;
+}
+
 function vg_meta(array $api) {
     $player = $api['player'];
     $name = (string)$player['name'];
@@ -262,10 +271,10 @@ function vg_meta(array $api) {
 
     $title = '';
     foreach ([
-        "Tin bão mới nhất: {$subject}{$lvTxt} - Vị trí, đường đi và dự báo ({$when})",
-        "Tin bão mới nhất: {$subject}{$lvTxt} - Đường đi và dự báo ({$when})",
-        "{$subject}{$lvTxt} - Đường đi và dự báo mới nhất ({$when})",
-        "{$subject}{$lvTxt} - Dự báo đường đi mới nhất",
+        "{$subject}{$lvTxt} mới nhất: Vị trí, đường đi, dự báo ({$when}/{$year})",
+        "{$subject}{$lvTxt} mới nhất: Đường đi và dự báo ({$when}/{$year})",
+        "{$subject}{$lvTxt} mới nhất: Đường đi và dự báo ({$when})",
+        "{$subject}{$lvTxt} mới nhất - Dự báo đường đi",
     ] as $t) {
         if (mb_strlen($t) <= 100) { $title = $t; break; }
     }
@@ -280,25 +289,32 @@ function vg_meta(array $api) {
         $body .= ($body === '' ? '' : "\n\n") . $p;
     }
     $lines = [
-        "{$subject}{$lvTxt}: cập nhật vị trí tâm bão, sức gió, vùng gió mạnh và dự báo đường đi mới nhất" . ($whenLong ? ' lúc ' . $whenLong . ' (giờ Việt Nam)' : '') . '.',
-        'Chi tiết về cơn bão ' . $label . ' có thể xem chi tiết tại: https://nangmua.vn/ty',
+        "Tin {$subject}{$lvTxt} mới nhất: vị trí tâm bão, sức gió, vùng gió mạnh, hướng di chuyển và dự báo đường đi" . ($whenLong ? ' lúc ' . $whenLong . ' năm ' . $year . ' (giờ Việt Nam)' : '') . '.',
+        'Xem bản đồ đường đi và dữ liệu chi tiết của ' . ($label !== '' ? 'cơn bão ' . $label : 'cơn bão') . ' tại: https://nangmua.vn/ty',
         '',
         'NỘI DUNG BẢN TIN:',
         $body,
         '',
         'Nguồn dữ liệu: Cơ quan Khí tượng Nhật Bản (JMA). Thời gian trong video là giờ Việt Nam.',
-        'Theo dõi kênh để cập nhật nhanh nhất các bản tin bão, áp thấp nhiệt đới và dự báo thời tiết.',
+        'Đăng ký kênh và bật chuông thông báo để nhận bản tin bão, áp thấp nhiệt đới và dự báo thời tiết mới nhất.',
         '',
-        implode(' ', array_filter([$tagName !== '' ? '#Bão' . $tagName : null, '#TinBão', '#DựBáoThờiTiết', $name !== '' ? '#Typhoon' . $tagName : null])),
+        implode(' ', array_filter([$tagName !== '' ? '#Bão' . $tagName : null, '#TinBão', '#DựBáoThờiTiết', $tagName !== '' ? '#Typhoon' . $tagName : null, '#BãoMớiNhất'])),
     ];
     $description = trim(implode("\n", $lines));
     while (strlen($description) > 4900) $description = mb_substr($description, 0, mb_strlen($description) - 200);
 
     $raw = [];
-    if ($name !== '') array_push($raw, "bão {$name}", $name, "typhoon {$name}", "tin bão {$name}", "bão {$name} mới nhất", "đường đi bão {$name}", "dự báo bão {$name}", "bão {$name} {$year}");
-    elseif ($no !== '') array_push($raw, "bão {$no}", "tin bão {$no}");
+    if ($name !== '') {
+        $nameNoAccent = vg_strip_accents($name);
+        array_push($raw,
+            "bão {$name}", "tin bão {$name}", "bão {$name} mới nhất", "bão {$name} hôm nay",
+            "đường đi bão {$name}", "dự báo bão {$name}", "bão {$name} {$year}", $name,
+            "typhoon {$name}", "typhoon {$name} {$year}", "typhoon {$name} track", "typhoon {$name} forecast",
+            "bao {$nameNoAccent}", "tin bao {$nameNoAccent}"
+        );
+    } elseif ($no !== '') array_push($raw, "bão {$no}", "tin bão {$no}", "bão số {$no}");
     if ($cls === 'siêu bão') array_push($raw, 'siêu bão', "siêu bão {$year}");
-    array_push($raw, 'tin bão', 'tin bão mới nhất', 'bản tin bão', 'dự báo bão', 'đường đi của bão', "bão {$year}", 'dự báo thời tiết', 'thời tiết hôm nay', 'áp thấp nhiệt đới', 'biển Đông', 'JMA', 'nangmua');
+    array_push($raw, 'tin bão', 'tin bão mới nhất', 'tin bão hôm nay', 'bản tin bão', 'dự báo bão', 'đường đi của bão', 'bão mới nhất', "bão {$year}", 'dự báo thời tiết', 'thời tiết hôm nay', 'áp thấp nhiệt đới', 'bão biển Đông', 'tin bão khẩn cấp', 'typhoon', 'typhoon tracker', 'tin bao moi nhat', 'JMA', 'nangmua');
     $tags = []; $total = 0; $seen = [];
     foreach ($raw as $t) {
         $t = trim(vg_clean($t));
@@ -423,6 +439,7 @@ function vg_step_render(array &$it) {
         if ($logTail !== '') fwrite(STDERR, "---- ffmpeg.log ({$it['storm']}) ----\n" . $logTail . "\n----\n");
         throw new RuntimeException('Dựng video thất bại (' . $st . '): ' . ($j['error'] ?? 'không rõ'));
     }
+    $it['chapters'] = is_array($j['chapters'] ?? null) ? $j['chapters'] : [];
     $src = __DIR__ . '/ff_jobs/' . basename($it['job']);
     if (!is_file($src . '/out.mp4')) throw new RuntimeException('Dựng xong nhưng không thấy out.mp4.');
     $dst = vg_item_dir($it);
@@ -430,6 +447,33 @@ function vg_step_render(array &$it) {
     if (is_file($src . '/thumb.jpg')) @copy($src . '/thumb.jpg', $dst . '/thumb.jpg');
     vg_video('POST', $q . '&ff=cleanup', ['job' => $it['job']], 30);
     return true;
+}
+
+function vg_apply_chapters($description, array $chapters) {
+    if (count($chapters) < 3) return $description;
+    $stamp = function ($s) {
+        $s = max(0, (int)floor($s));
+        $h = intdiv($s, 3600); $m = intdiv($s % 3600, 60); $r = $s % 60;
+        return $h ? sprintf('%d:%02d:%02d', $h, $m, $r) : sprintf('%d:%02d', $m, $r);
+    };
+    $head = 'MỐC THỜI GIAN:';
+    $lines = [];
+    foreach ($chapters as $c) $lines[] = $stamp($c['t'] ?? 0) . ' ' . vg_clean($c['title'] ?? '');
+    $block = $head . "\n" . implode("\n", $lines);
+    $marker = 'NỘI DUNG BẢN TIN:';
+    $d = strpos($description, $marker) !== false
+        ? str_replace($marker, $block . "\n\n" . $marker, $description)
+        : rtrim($description) . "\n\n" . $block;
+    while (strlen($d) > 4950) {
+        $i = strpos($d, "\n\n" . $marker);
+        $j = strpos($d, "\n\nNguồn dữ liệu:");
+        if ($i === false || $j === false || $j <= $i) break;
+        $body = substr($d, $i, $j - $i);
+        $cut = strrpos($body, "\n\n");
+        if ($cut === false || $cut <= strlen($marker) + 2) break;
+        $d = substr($d, 0, $i) . substr($body, 0, $cut) . substr($d, $j);
+    }
+    return $d;
 }
 
 // Bước 5: upload resumable từng khúc. Trả true khi upload xong.
@@ -440,6 +484,7 @@ function vg_step_upload(array &$it) {
     $auth = 'Authorization: Bearer ' . $token;
     $api = vg_api($it);
     $meta = vg_meta($api);
+    $meta['description'] = vg_apply_chapters($meta['description'], $it['chapters'] ?? []);
     $it['title'] = $meta['title'];
 
     if (empty($it['upload_url'])) {
