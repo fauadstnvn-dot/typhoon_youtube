@@ -1020,7 +1020,7 @@ function vb_milestone_scenes(array $ms, array $cur, $name, $rank, $hist, $seq = 
             $after = $hist['count'] === 1
                 ? 'sau cơn bão cùng tên vào năm ' . $hist['years'][0]
                 : (count($hist['years']) > 8
-                    ? 'sau ' . $hist['count'] . ' cơn bão cùng tên, gần nh���t vào năm ' . end($hist['years'])
+                    ? 'sau ' . $hist['count'] . ' cơn bão cùng tên, gần nhất vào năm ' . end($hist['years'])
                     : 'sau các cơn bão cùng tên vào các năm ' . vb_join_vi($hist['years']));
             $sc[] = vb_cue(vb_ucfirst($who) . ' là cơn bão thứ ' . vb_ordinal($hist['ordinal']) . ' mang tên này trong lịch sử, ' . $after . '.', 'history', 0);
             if ($hist['strongest'] !== null) {
@@ -1219,7 +1219,7 @@ function vb_land_cue($p, $k) {
         $s = vb_pick('land-far', [
             'Vị trí này còn cách rất xa đất liền Việt Nam, cách ' . $prov . ' khoảng ' . $km . '.',
             $when . ', tâm ' . $noun . ' vẫn còn ở rất xa nước ta, cách đất liền gần nhất là ' . $prov . ' khoảng ' . $km . '.',
-            'Tâm ' . $noun . ' c��n cách rất xa đất liền Việt Nam, khoảng ' . $km . ' nếu tính đến ' . $prov . '.',
+            'Tâm ' . $noun . ' còn cách rất xa đất liền Việt Nam, khoảng ' . $km . ' nếu tính đến ' . $prov . '.',
         ]);
     }
     return vb_cue($s, 'land', $k, ['land' => $d + ['provShort' => vb_prov_short($d['prov'])]]);
@@ -1406,7 +1406,7 @@ function vb_build_bulletin(array $storm, $conn = null) {
     $end = [];
     if ($minLandKm !== null && $minLandKm <= 500) {
         $end[] = vb_cue(vb_pick('advice-near', [
-            'Người dân tại các tỉnh ven biển cần th����ng xuyên theo dõi các bản tin tiếp theo để chủ động phòng tránh.',
+            'Người dân tại các tỉnh ven biển cần thường xuyên theo dõi các bản tin tiếp theo để chủ động phòng tránh.',
             'Các bạn ở khu vực ven biển và trên biển nên cập nhật thông tin thường xuyên để chủ động ứng phó.',
         ]), 'outro', 0);
     } else {
@@ -2928,6 +2928,7 @@ function vbf_run($dir, array $o, array $player, array $env) {
     }
     vbf_job_write($dir, ['state' => 'done', 'stage' => 'Hoàn tất', 'progress' => 1.0, 'frame' => $nFrames, 'size' => filesize($outFile), 'secs' => $T,
         'cueStarts' => array_map(fn($e) => round($e['start'], 2), array_values(array_filter($entries, fn($e) => $e['type'] === 'cue'))),
+        'chapters' => vb_yt_chapters($cues, array_map(fn($e) => $e['start'], array_values(array_filter($entries, fn($e) => $e['type'] === 'cue'))), $pts),
         'noAudio' => !$hasAudio, 'hasThumb' => is_file($dir . '/thumb.jpg'), 'w' => $W, 'h' => $H, 'fps' => $fps]);
 }
 
@@ -3018,7 +3019,7 @@ function vbf_handle($player, $selected) {
         vbf_job_write($dir, ['state' => 'queued', 'stage' => 'Đang khởi động...', 'storm' => (string)$selected['id'], 'created' => time(), 'w' => $W, 'h' => $H, 'fps' => $fps,
             'progress' => 0.0, 'voiced' => count(array_filter($files)), 'cues' => count($files)]);
 
-        // Trả lời trình duyệt ngay, phần d��ng chạy tiếp ở nền.
+        // Trả lời trình duyệt ngay, phần d���ng chạy tiếp ở nền.
         ignore_user_abort(true);
         @set_time_limit(getenv('GITHUB_ACTIONS') === 'true' ? 7200 : 0);
         @ini_set('memory_limit', '1536M');
@@ -3162,6 +3163,68 @@ function vb_yt_meta(array $bulletin, array $player) {
         'tags'        => $tags,
         'file'        => $slug ?: 'ban-tin-bao',
     ];
+}
+
+// Mốc thời gian (chapters) cho mô tả YouTube. $starts[i] = giây bắt đầu của cue i trong video.
+// YouTube: mốc đầu phải là 0:00, tối thiểu 3 mốc, mỗi mốc cách nhau >= 10 giây.
+function vb_yt_chapters(array $cues, array $starts, array $pts) {
+    if (!$cues || count($starts) !== count($cues)) return [];
+    $groups = [];
+    foreach ($cues as $i => $c) {
+        $key = $c['scene'] ?? $i;
+        $n = count($groups);
+        if ($n && $groups[$n - 1]['scene'] === $key) $groups[$n - 1]['cues'][] = $c;
+        else $groups[] = ['scene' => $key, 'cues' => [$c], 't' => (float)$starts[$i]];
+    }
+    $out = []; $isCur = false;
+    foreach ($groups as $k => $g) {
+        $acts = array_column($g['cues'], 'act');
+        $pt = (int)($g['cues'][0]['pt'] ?? 0);
+        $land = null;
+        foreach ($g['cues'] as $c) if (($c['act'] ?? '') === 'land') { $land = $c; break; }
+        if (in_array('greet', $acts, true)) $title = 'Mở đầu';
+        elseif (in_array('outro', $acts, true)) $title = 'Khuyến cáo và lời kết';
+        elseif (in_array('history', $acts, true)) $title = 'Lịch sử tên bão';
+        elseif (in_array('rank', $acts, true)) $title = 'Xếp hạng cường độ trong năm';
+        elseif ($pt > 0) {
+            $title = 'Dự báo ' . (!empty($pts[$pt]['time']) ? $pts[$pt]['time'] : 'tiếp theo');
+            if (!empty($land['land']['provShort'])) $title .= ' - đổ bộ ' . $land['land']['provShort'];
+        } elseif (in_array('position', $acts, true) || in_array('dissipate', $acts, true)) { $isCur = true; $title = 'Vị trí và cường độ hiện tại'; }
+        else $title = $isCur ? 'Diễn biến bão và hướng di chuyển' : 'Thông tin nổi bật';
+        $t = $k === 0 ? 0.0 : $g['t'];
+        $prev = $out ? $out[count($out) - 1] : null;
+        if ($prev && $t - $prev['t'] < 10) continue;
+        $out[] = ['t' => round($t, 2), 'title' => $title];
+    }
+    return count($out) >= 3 ? $out : [];
+}
+
+function vb_yt_stamp($sec) {
+    $sec = max(0, (int)floor($sec));
+    $h = intdiv($sec, 3600); $m = intdiv($sec % 3600, 60); $s = $sec % 60;
+    return $h ? sprintf('%d:%02d:%02d', $h, $m, $s) : sprintf('%d:%02d', $m, $s);
+}
+
+// Chèn khối MỐC THỜI GIAN trước mục NỘI DUNG BẢN TIN, rồi cắt bớt nội dung nếu mô tả vượt giới hạn YouTube.
+function vb_yt_apply_chapters($description, array $chapters) {
+    if (!$chapters) return $description;
+    $head = 'MỐC THỜI GIAN:';
+    $block = $head . "\n" . implode("\n", array_map(fn($c) => vb_yt_stamp($c['t']) . ' ' . $c['title'], $chapters));
+    $description = preg_replace('/\n*' . preg_quote($head, '/') . '\n(?:\d+:\d\d(?::\d\d)? [^\n]*\n?)+/u', "\n", (string)$description);
+    $marker = 'NỘI DUNG BẢN TIN:';
+    $d = strpos($description, $marker) !== false
+        ? str_replace($marker, $block . "\n\n" . $marker, $description)
+        : rtrim($description) . "\n\n" . $block;
+    while (strlen($d) > 4950) {
+        $i = strpos($d, "\n\n" . $marker);
+        $j = strpos($d, "\n\nNguồn dữ liệu:");
+        if ($i === false || $j === false || $j <= $i) break;
+        $body = substr($d, $i, $j - $i);
+        $cut = strrpos($body, "\n\n");
+        if ($cut === false || $cut <= strlen($marker) + 2) break;
+        $d = substr($d, 0, $i) . substr($body, 0, $cut) . substr($d, $j);
+    }
+    return $d;
 }
 
 $ytMeta = $player ? vb_yt_meta($bulletin, $player) : null;
@@ -4692,7 +4755,7 @@ $ytMeta = $player ? vb_yt_meta($bulletin, $player) : null;
 
     // ---------------------------------------------------------------- T��o video (ghi lại sân khấu bản đồ + giọng đọc)
     //  1. getDisplayMedia chụp chính tab này, cắt đúng khung #stage (Region Capture, nếu không có thì tự cắt theo toạ độ).
-    //  2. Vẽ từng khung hình lên canvas đúng độ phân giải đã chọn, trộn âm thanh Vbee qua AudioContext.
+    //  2. Vẽ từng khung hình lên canvas đúng độ phân gi��i đã chọn, trộn âm thanh Vbee qua AudioContext.
     //  3. MediaRecorder ghi toàn bộ bản tin; cảnh cuối (đã ẩn phụ đề) được chụp làm thumbnail.
     const YT_INIT = <?= json_encode(['meta' => $ytMeta, 'clientId' => vb_yt_client_id(), 'scopes' => VB_YT_SCOPES, 'storm' => $selected['id']], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
     const byId = id => document.getElementById(id);
@@ -5256,7 +5319,7 @@ $ytMeta = $player ? vb_yt_meta($bulletin, $player) : null;
             const btn = byId('btnYtUpload');
             btn.disabled = true; btn.textContent = 'Đang upload...';
             barEl.style.width = '0%';
-            status('Đang khởi t���o phiên upload...');
+            status('Đang khởi tạo phiên upload...');
             const blob = recState.video;
             try {
                 const meta = {
