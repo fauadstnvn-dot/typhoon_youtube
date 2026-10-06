@@ -3018,9 +3018,9 @@ function vbf_handle($player, $selected) {
         vbf_job_write($dir, ['state' => 'queued', 'stage' => 'Đang khởi động...', 'storm' => (string)$selected['id'], 'created' => time(), 'w' => $W, 'h' => $H, 'fps' => $fps,
             'progress' => 0.0, 'voiced' => count(array_filter($files)), 'cues' => count($files)]);
 
-        // Trả lời trình duyệt ngay, phần dựng chạy tiếp ở nền.
+        // Trả lời trình duyệt ngay, phần d��ng chạy tiếp ở nền.
         ignore_user_abort(true);
-        @set_time_limit(0);
+        @set_time_limit(getenv('GITHUB_ACTIONS') === 'true' ? 7200 : 0);
         @ini_set('memory_limit', '1536M');
         $body = json_encode(['ok' => true, 'job' => $id], JSON_UNESCAPED_UNICODE);
         header('Content-Type: application/json; charset=utf-8');
@@ -5125,7 +5125,7 @@ $ytMeta = $player ? vb_yt_meta($bulletin, $player) : null;
             return j;
         }
 
-        // ---------- Tiêu đề / mô tả / tag
+        // ---------- Tiêu đ��� / mô tả / tag
         const byteLen = s => new Blob([s]).size;
         const parseTags = () => [...new Map(tagsEl.value.split(',').map(t => t.replace(/[<>"]/g, '').trim()).filter(Boolean).map(t => [t.toLowerCase(), t])).values()];
         const tagCost = tags => tags.reduce((n, t) => n + t.length + (t.includes(' ') ? 2 : 0) + 1, 0);
@@ -5256,7 +5256,7 @@ $ytMeta = $player ? vb_yt_meta($bulletin, $player) : null;
             const btn = byId('btnYtUpload');
             btn.disabled = true; btn.textContent = 'Đang upload...';
             barEl.style.width = '0%';
-            status('Đang khởi tạo phiên upload...');
+            status('Đang khởi t���o phiên upload...');
             const blob = recState.video;
             try {
                 const meta = {
