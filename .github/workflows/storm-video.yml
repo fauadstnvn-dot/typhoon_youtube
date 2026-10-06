@@ -1,8 +1,6 @@
 name: Storm bulletin video
 
 on:
-  schedule:
-    - cron: '0 2,5,8,11,14,17,20,23 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -104,7 +102,7 @@ jobs:
           set -eu
           dir="$(cd "$VIDEO_DIR" && pwd)"
           cd "$dir"
-          PHP_CLI_SERVER_WORKERS=4 nohup php -d memory_limit=1024M -d max_execution_time=0 \
+          PHP_CLI_SERVER_WORKERS=4 nohup php -d memory_limit=1024M -d max_execution_time=7200 \
             -S 127.0.0.1:8080 -t "$dir" > /tmp/php-server.log 2>&1 &
           for i in $(seq 1 20); do
             curl -s -o /dev/null http://127.0.0.1:8080/video.php && break || sleep 1
