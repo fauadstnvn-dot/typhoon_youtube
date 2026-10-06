@@ -415,7 +415,14 @@ function vg_step_render(array &$it) {
         $it['detail'] = ($j['stage'] ?? 'Đang dựng') . ' ' . round(($j['progress'] ?? 0) * 100) . '%';
         return false;
     }
-    if ($st !== 'done') throw new RuntimeException('Dựng video thất bại (' . $st . '): ' . ($j['error'] ?? 'không rõ'));
+    if ($st !== 'done') {
+        $logTail = '';
+        $logFile = __DIR__ . '/ff_jobs/' . basename($it['job']) . '/ffmpeg.log';
+        if (is_file($logFile)) $logTail = substr((string)file_get_contents($logFile), -1200);
+        elseif (!empty($j['log'])) $logTail = substr((string)$j['log'], -1200);
+        if ($logTail !== '') fwrite(STDERR, "---- ffmpeg.log ({$it['storm']}) ----\n" . $logTail . "\n----\n");
+        throw new RuntimeException('Dựng video thất bại (' . $st . '): ' . ($j['error'] ?? 'không rõ'));
+    }
     $src = __DIR__ . '/ff_jobs/' . basename($it['job']);
     if (!is_file($src . '/out.mp4')) throw new RuntimeException('Dựng xong nhưng không thấy out.mp4.');
     $dst = vg_item_dir($it);
