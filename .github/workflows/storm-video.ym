@@ -1,0 +1,95 @@
+name: Storm bulletin video
+
+on:
+  schedule:
+    - cron: '0 2,5,8,11,14,17,20,23 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: storm-video
+  cancel-in-progress: false
+
+env:
+  # Thư mục chứa video.php và video_github.php trong repo ('.' nếu nằm ở gốc).
+  # ../config.php và ../vn.json sẽ được đặt ở thư mục cha của thư mục này.
+  VIDEO_DIR: '.'
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cài PHP, ffmpeg, font tiếng Việt
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            php-cli php-gd php-curl php-mysql php-mbstring php-xml php-zip \
+            ffmpeg fonts-noto-core fonts-dejavu-core jq
+          php -v | head -1
+          ffmpeg -version | head -1
+          php -r 'var_dump(function_exists("imagettftext"), function_exists("proc_open"));'
+
+      - name: Ghi config.php và token YouTube từ secrets
+        env:
+          CONFIG_PHP: ${{ secrets.CONFIG_PHP }}
+          YOUTUBE_TOKENS_JSON: ${{ secrets.YOUTUBE_TOKENS_JSON }}
+        run: |
+          set -eu
+          dir="$(cd "$VIDEO_DIR" && pwd)"
+          parent="$(dirname "$dir")"
+          printf '%s' "$CONFIG_PHP" > "$parent/config.php"
+          printf '%s' "$YOUTUBE_TOKENS_JSON" > "$dir/youtube_tokens.json"
+          chmod 600 "$parent/config.php" "$dir/youtube_tokens.json"
+          [ -f "$dir/vn.json" ] && [ ! -f "$parent/vn.json" ] && cp "$dir/vn.json" "$parent/vn.json" || true
+          # VIDEO_GITHUB_KEY không cần khi chạy CLI; đảm bảo có font/ffmpeg ở đường dẫn mặc định
+          grep -q "define('VIDEO_GITHUB_KEY'" "$parent/config.php" || echo "(config.php không có VIDEO_GITHUB_KEY - không sao khi chạy CLI)"
+
+      - name: Cache bản đồ và giọng đọc
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.VIDEO_DIR }}/tile_cache
+            ${{ env.VIDEO_DIR }}/tts_cache
+          key: storm-cache-${{ github.run_id }}
+          restore-keys: storm-cache-
+
+      - name: Chạy video.php nội bộ (ffmpeg trên runner)
+        run: |
+          set -eu
+          dir="$(cd "$VIDEO_DIR" && pwd)"
+          cd "$dir"
+          PHP_CLI_SERVER_WORKERS=4 nohup php -d memory_limit=1024M -d max_execution_time=0 \
+            -S 127.0.0.1:8080 -t "$dir" > /tmp/php-server.log 2>&1 &
+          for i in $(seq 1 20); do
+            curl -s -o /dev/null http://127.0.0.1:8080/video.php && break || sleep 1
+          done
+
+      - name: Chạy bản tin tuần tự cho tới khi hết
+        env:
+          VIDEO_BASE_URL: http://127.0.0.1:8080/video.php
+        run: |
+          set -u
+          cd "$VIDEO_DIR"
+          errors=0
+          for i in $(seq 1 6000); do
+            out=$(php -d memory_limit=1024M video_github.php tick 2>&1) || true
+            state=$(echo "$out" | jq -r '.state // "error"' 2>/dev/null || echo error)
+            echo "[$i] $(echo "$out" | jq -c '{state, current, uploaded, failed, remaining, message, error}' 2>/dev/null || echo "$out" | head -c 400)"
+            case "$state" in
+              working) errors=0; sleep 3 ;;
+              idle)
+                echo "$out" | jq . 2>/dev/null || echo "$out"
+                [ "$(echo "$out" | jq -r '.failed // 0')" -gt 0 ] && exit 1
+                exit 0 ;;
+              *) errors=$((errors+1)); [ "$errors" -ge 3 ] && { echo "$out"; tail -n 40 /tmp/php-server.log; exit 1; }; sleep 15 ;;
+            esac
+          done
+          echo "Hết số vòng lặp tối đa"; exit 1
+
+      - name: Dọn file nhạy cảm
+        if: always()
+        run: |
+          dir="$(cd "$VIDEO_DIR" && pwd)"
+          rm -f "$(dirname "$dir")/config.php" "$dir/youtube_tokens.json"
