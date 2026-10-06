@@ -2,7 +2,7 @@
 // =============================================================================
 //  TỰ ĐỘNG HOÁ BẢN TIN BÃO -> VIDEO -> YOUTUBE (chạy bởi GitHub Actions)
 //  -----------------------------------------------------------------------------
-//  Đặt file này CÙNG THƯ MỤC với video.php (dùng chung ../config.php, tts_cache/, ff_jobs/, youtube_tokens.json).
+//  Đặt file này CÙNG THƯ MỤC với video.php (dùng chung ../config.php, tts_cache/, ff_jobs/).
 //
 //  Cách hoạt động: GitHub Actions (cron UTC 02:00, 05:00, ... 23:00) gọi lặp lại
 //      video_github.php?action=tick      (kèm header X-Auth-Key)
@@ -21,10 +21,11 @@
 //  Khai báo trong ../config.php:
 //    define('VIDEO_GITHUB_KEY', 'chuoi-bi-mat-dai');          // bắt buộc, trùng với GitHub secret VIDEO_KEY
 //    define('VIDEO_BASE_URL', 'https://domain/thu-muc/video.php'); // tuỳ chọn (mặc định suy ra từ request)
-//    define('YOUTUBE_CLIENT_ID', '...'); define('YOUTUBE_CLIENT_SECRET', '...');  // như video.php
+//    // YouTube: lấy từ bảng tb_bao_secret (xoay vòng nhiều cặp client_id/client_secret/token), không cần khai báo ở đây.
+//    // tuỳ chọn: YOUTUBE_MAX_PER_PAIR (mặc định 9 lần upload/cặp/vòng), YOUTUBE_TABLE (mặc định tb_bao_secret)
 //    // tuỳ chọn: VIDEO_AUTO_RES (720|1080|1440|2160), VIDEO_AUTO_FPS, VIDEO_AUTO_BASE (sat|dark|light),
 //    //           VIDEO_AUTO_PRIVACY (public|unlisted|private), VIDEO_AUTO_VOICE, VIDEO_AUTO_MAX (số bão tối đa mỗi lượt)
-//  Cần đăng nhập YouTube một lần ở video.php (để có refresh_token trong youtube_tokens.json).
+//  Mỗi cặp trong tb_bao_secret cần cột token là JSON (có refresh_token) lấy sau khi đăng nhập YouTube bằng đúng client_id đó.
 //  Có thể chạy tay bằng CLI: php video_github.php tick | status | reset
 //  CHẾ ĐỘ GITHUB RUNNER (ffmpeg chạy trên GitHub): workflow tự cài php/ffmpeg/font, chạy `php -S 127.0.0.1:8080`,
 //  đặt VIDEO_BASE_URL=http://127.0.0.1:8080/video.php rồi gọi `php video_github.php tick` lặp lại (xem .github/workflows/storm-video.yml).
@@ -128,6 +129,19 @@ function vg_db_init() {
         tieu_de VARCHAR(500) NOT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         UNIQUE KEY uq_bulletin (bulletin_key)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    $c->query("CREATE TABLE IF NOT EXISTS `" . vg_yt_table() . "` (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        ten VARCHAR(100) NULL,
+        client_id VARCHAR(255) NOT NULL,
+        client_secret VARCHAR(255) NOT NULL,
+        token MEDIUMTEXT NOT NULL,
+        num INT UNSIGNED NOT NULL DEFAULT 0,
+        active TINYINT(1) NOT NULL DEFAULT 1,
+        last_used_at DATETIME NULL,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_client_id (client_id),
+        KEY idx_pick (active, num, id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
     $c->query("CREATE TABLE IF NOT EXISTS tv_ytb (
         stt INT AUTO_INCREMENT PRIMARY KEY,
@@ -328,28 +342,72 @@ function vg_meta(array $api) {
 }
 
 // ----------------------------------------------------------------------------- YouTube
-function vg_yt_token_file() {
-    $f = vg_conf('YOUTUBE_TOKEN_FILE');
-    return $f !== '' ? $f : __DIR__ . '/youtube_tokens.json';
+// Các cặp client_id / client_secret / token nằm trong bảng tb_bao_secret và được xoay vòng:
+// luôn chọn cặp đang active có num nhỏ nhất (hòa thì id nhỏ nhất). Khi mọi cặp đều đạt
+// YOUTUBE_MAX_PER_PAIR (mặc định 9) thì reset num về 0 và bắt đầu vòng mới.
+function vg_yt_table() { return preg_replace('/[^A-Za-z0-9_]/', '', vg_conf('YOUTUBE_TABLE', 'tb_bao_secret')); }
+function vg_yt_max() { return max(1, (int)vg_conf('YOUTUBE_MAX_PER_PAIR', '9')); }
+
+// Chọn 1 cặp cho video sắp upload và cộng num ngay trong 1 transaction (an toàn khi chạy song song).
+function vg_yt_claim(array $exclude = []) {
+    $c = vg_db(); $tb = vg_yt_table(); $max = vg_yt_max();
+    $c->begin_transaction();
+    try {
+        $res = $c->query("SELECT id, num FROM `$tb` WHERE active = 1 ORDER BY num ASC, id ASC FOR UPDATE");
+        if (!$res) throw new RuntimeException("Không đọc được bảng $tb.");
+        $rows = $res->fetch_all(MYSQLI_ASSOC);
+        if (!$rows) throw new RuntimeException("Bảng $tb chưa có cặp YouTube nào (active = 1).");
+        if ((int)$rows[0]['num'] >= $max) {
+            $c->query("UPDATE `$tb` SET num = 0 WHERE active = 1");
+            foreach ($rows as &$r) $r['num'] = 0;
+            unset($r);
+        }
+        $pick = null;
+        foreach ($rows as $r) if (!in_array((int)$r['id'], $exclude, true)) { $pick = (int)$r['id']; break; }
+        if ($pick === null) throw new RuntimeException('Mọi cặp YouTube đều đã thử và lỗi quota/hạn mức.');
+        $stmt = $c->prepare("UPDATE `$tb` SET num = num + 1, last_used_at = NOW() WHERE id = ?");
+        $stmt->bind_param('i', $pick);
+        $stmt->execute();
+        $stmt->close();
+        $c->commit();
+        return $pick;
+    } catch (Throwable $e) {
+        $c->rollback();
+        throw $e;
+    }
 }
 
-function vg_yt_token() {
-    $f = vg_yt_token_file();
-    $t = is_file($f) ? json_decode((string)file_get_contents($f), true) : null;
-    if (!is_array($t)) throw new RuntimeException('Chưa đăng nhập YouTube: mở video.php và bấm đăng nhập YouTube một lần.');
+function vg_yt_token($pairId) {
+    $c = vg_db(); $tb = vg_yt_table();
+    $stmt = $c->prepare("SELECT client_id, client_secret, token FROM `$tb` WHERE id = ?");
+    $stmt->bind_param('i', $pairId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row) throw new RuntimeException("Không tìm thấy cặp YouTube id=$pairId trong $tb.");
+
+    $raw = trim((string)$row['token']);
+    $t = json_decode($raw, true);
+    if (!is_array($t)) $t = $raw !== '' ? ['refresh_token' => $raw] : null;
+    if (!$t) throw new RuntimeException("Cặp YouTube id=$pairId chưa có token.");
+
     $exp = (int)($t['saved_at'] ?? 0) + (int)($t['expires_in'] ?? 3600) - 300;
     if (!empty($t['access_token']) && time() < $exp) return $t['access_token'];
-    if (empty($t['refresh_token'])) throw new RuntimeException('Token YouTube không có refresh_token: đăng nhập lại trong video.php.');
-    $id = vg_conf('YOUTUBE_CLIENT_ID'); $secret = vg_conf('YOUTUBE_CLIENT_SECRET');
-    if ($id === '' || $secret === '') throw new RuntimeException('Thiếu YOUTUBE_CLIENT_ID / YOUTUBE_CLIENT_SECRET trong ../config.php.');
+    if (empty($t['refresh_token'])) throw new RuntimeException("Token của cặp YouTube id=$pairId không có refresh_token: đăng nhập lại để lấy token mới.");
+    if ($row['client_id'] === '' || $row['client_secret'] === '') throw new RuntimeException("Cặp YouTube id=$pairId thiếu client_id / client_secret.");
+
     $r = vg_http('POST', 'https://oauth2.googleapis.com/token', ['Content-Type: application/x-www-form-urlencoded'], http_build_query([
-        'client_id' => $id, 'client_secret' => $secret, 'refresh_token' => $t['refresh_token'], 'grant_type' => 'refresh_token',
+        'client_id' => $row['client_id'], 'client_secret' => $row['client_secret'], 'refresh_token' => $t['refresh_token'], 'grant_type' => 'refresh_token',
     ]), 30);
-    if ($r['code'] !== 200 || empty($r['json']['access_token'])) throw new RuntimeException('Không làm mới được token YouTube (HTTP ' . $r['code'] . ').');
+    if ($r['code'] !== 200 || empty($r['json']['access_token'])) throw new RuntimeException("Không làm mới được token YouTube của cặp id=$pairId (HTTP " . $r['code'] . ').');
     $new = $r['json'];
     $new['refresh_token'] = $new['refresh_token'] ?? $t['refresh_token'];
     $new['saved_at'] = time();
-    file_put_contents($f, json_encode($new, JSON_PRETTY_PRINT), LOCK_EX);
+    $json = json_encode($new, JSON_UNESCAPED_SLASHES);
+    $stmt = $c->prepare("UPDATE `$tb` SET token = ? WHERE id = ?");
+    $stmt->bind_param('si', $json, $pairId);
+    $stmt->execute();
+    $stmt->close();
     return $new['access_token'];
 }
 
@@ -480,7 +538,8 @@ function vg_apply_chapters($description, array $chapters) {
 function vg_step_upload(array &$it) {
     $file = vg_item_dir($it) . '/out.mp4';
     $size = filesize($file);
-    $token = vg_yt_token();
+    if (empty($it['yt_id'])) $it['yt_id'] = vg_yt_claim($it['yt_tried'] ?? []);
+    $token = vg_yt_token($it['yt_id']);
     $auth = 'Authorization: Bearer ' . $token;
     $api = vg_api($it);
     $meta = vg_meta($api);
@@ -496,7 +555,16 @@ function vg_step_upload(array &$it) {
         $r = vg_http('POST', 'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status', [
             $auth, 'Content-Type: application/json; charset=UTF-8', 'X-Upload-Content-Length: ' . $size, 'X-Upload-Content-Type: video/mp4',
         ], $body, 60);
-        if ($r['code'] !== 200 || empty($r['headers']['location'])) throw new RuntimeException('Không khởi tạo được upload YouTube: ' . vg_yt_error($r, 'lỗi'));
+        if ($r['code'] !== 200 || empty($r['headers']['location'])) {
+            $msg = vg_yt_error($r, 'lỗi');
+            if ($r['code'] === 403 && preg_match('/quota|rateLimit|uploadLimit/i', $msg . json_encode($r['json']))) {
+                $it['yt_tried'][] = (int)$it['yt_id'];
+                $it['yt_id'] = null;
+                $it['detail'] = 'Cặp YouTube hết hạn mức, chuyển sang cặp kế tiếp';
+                return false;
+            }
+            throw new RuntimeException('Không khởi tạo được upload YouTube: ' . $msg);
+        }
         $it['upload_url'] = $r['headers']['location'];
         $it['offset'] = 0;
         $it['detail'] = 'Đã khởi tạo upload YouTube';
@@ -546,7 +614,7 @@ function vg_step_finish(array &$it) {
     $thumb = vg_item_dir($it) . '/thumb.jpg';
     if (is_file($thumb)) {
         $r = vg_http('POST', 'https://www.googleapis.com/upload/youtube/v3/thumbnails/set?uploadType=media&videoId=' . rawurlencode($it['video_id']),
-            ['Authorization: Bearer ' . vg_yt_token(), 'Content-Type: image/jpeg'], file_get_contents($thumb), 120);
+            ['Authorization: Bearer ' . vg_yt_token($it['yt_id']), 'Content-Type: image/jpeg'], file_get_contents($thumb), 120);
         $it['thumb'] = $r['code'] === 200 ? 'ok' : 'Chưa đặt được thumbnail: ' . vg_yt_error($r, 'lỗi');
     }
     $it['link'] = $link;
