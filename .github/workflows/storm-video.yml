@@ -21,15 +21,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cài PHP, ffmpeg, font tiếng Việt (có cache, lần sau không tải lại)
-        uses: awalsh128/cache-apt-pkgs-action@v1
+      - name: Cài PHP (đã có sẵn trên runner, chỉ bật extension)
+        uses: shivammathur/setup-php@v2
         with:
-          packages: php-cli php-gd php-curl php-mysql php-mbstring php-xml php-zip ffmpeg fonts-noto-core fonts-dejavu-core jq
-          version: 1.0
+          php-version: '8.3'
+          extensions: gd, curl, mysqli, mbstring, xml, zip
+          tools: none
+          coverage: none
+
+      - name: Cài ffmpeg bản static (có cache, không phụ thuộc thư viện hệ thống)
+        uses: FedericoCarboni/setup-ffmpeg@v3
+        with:
+          ffmpeg-version: release
+
+      - name: Cài font tiếng Việt
+        run: |
+          sudo apt-get install -y --no-install-recommends fonts-noto-core fonts-dejavu-core >/dev/null 2>&1 \
+            || (sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends fonts-noto-core fonts-dejavu-core)
 
       - name: Kiểm tra công cụ
         run: |
           fc-cache -f >/dev/null 2>&1 || true
+          which ffmpeg
           php -v | head -1
           ffmpeg -version | head -1
           php -r 'var_dump(function_exists("imagettftext"), function_exists("proc_open"));'
