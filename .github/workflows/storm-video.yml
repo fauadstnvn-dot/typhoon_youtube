@@ -55,9 +55,6 @@ jobs:
           DB_NAME: ${{ secrets.DB_NAME }}
           VBEE_APP_ID: ${{ secrets.VBEE_APP_ID }}
           VBEE_TOKEN: ${{ secrets.VBEE_TOKEN }}
-          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
-          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
-          YOUTUBE_TOKENS_JSON: ${{ secrets.YOUTUBE_TOKENS_JSON }}
         run: |
           set -eu
           dir="$(cd "$VIDEO_DIR" && pwd)"
@@ -65,10 +62,10 @@ jobs:
           if [ -n "$CONFIG_PHP" ]; then
             printf '%s' "$CONFIG_PHP" > "$parent/config.php"
           else
-            echo "Không có secret CONFIG_PHP - tự sinh config.php từ secret DB_*, VBEE_*, YOUTUBE_*"
+            echo "Không có secret CONFIG_PHP - tự sinh config.php từ secret DB_*, VBEE_* (YouTube lấy từ bảng tb_bao_secret)"
             php -r '
               $o = "<?php\n";
-              foreach (["VBEE_APP_ID","VBEE_TOKEN","YOUTUBE_CLIENT_ID","YOUTUBE_CLIENT_SECRET"] as $k) {
+              foreach (["VBEE_APP_ID","VBEE_TOKEN"] as $k) {
                   $o .= "define(" . var_export($k, true) . ", " . var_export((string)getenv($k), true) . ");\n";
               }
               $o .= "mysqli_report(MYSQLI_REPORT_OFF);\n";
@@ -82,8 +79,7 @@ jobs:
             ' "$parent/config.php"
           fi
           php -r 'require $argv[1]; if (!isset($conn)) { fwrite(STDERR, "config.php không tạo biến \$conn\n"); exit(1);} if ($conn->connect_error) { fwrite(STDERR, "Lỗi MySQL: " . $conn->connect_error . "\n"); exit(1);} echo "Kết nối MySQL OK\n";' "$parent/config.php"
-          printf '%s' "$YOUTUBE_TOKENS_JSON" > "$dir/youtube_tokens.json"
-          chmod 600 "$parent/config.php" "$dir/youtube_tokens.json"
+          chmod 600 "$parent/config.php"
           [ -f "$dir/vn.json" ] && [ ! -f "$parent/vn.json" ] && cp "$dir/vn.json" "$parent/vn.json" || true
           # VIDEO_GITHUB_KEY không cần khi chạy CLI; đảm bảo có font/ffmpeg ở đường dẫn mặc định
           grep -q "define('VIDEO_GITHUB_KEY'" "$parent/config.php" || echo "(config.php không có VIDEO_GITHUB_KEY - không sao khi chạy CLI)"
@@ -134,4 +130,4 @@ jobs:
         if: always()
         run: |
           dir="$(cd "$VIDEO_DIR" && pwd)"
-          rm -f "$(dirname "$dir")/config.php" "$dir/youtube_tokens.json"
+          rm -f "$(dirname "$dir")/config.php"
