@@ -21,12 +21,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cài PHP, ffmpeg, font tiếng Việt
+      - name: Cài PHP, ffmpeg, font tiếng Việt (có cache, lần sau không tải lại)
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: php-cli php-gd php-curl php-mysql php-mbstring php-xml php-zip ffmpeg fonts-noto-core fonts-dejavu-core jq
+          version: 1.0
+
+      - name: Kiểm tra công cụ
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y --no-install-recommends \
-            php-cli php-gd php-curl php-mysql php-mbstring php-xml php-zip \
-            ffmpeg fonts-noto-core fonts-dejavu-core jq
+          fc-cache -f >/dev/null 2>&1 || true
           php -v | head -1
           ffmpeg -version | head -1
           php -r 'var_dump(function_exists("imagettftext"), function_exists("proc_open"));'
