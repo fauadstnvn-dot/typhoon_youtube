@@ -113,7 +113,8 @@ function vg_video($method, $query, $post = null, $timeout = 90) {
 // ----------------------------------------------------------------------------- Cơ sở dữ liệu
 function vg_db() {
     global $conn;
-    if (!isset($conn) || $conn->connect_error) throw new RuntimeException('Không kết nối được cơ sở dữ liệu (kiểm tra ../config.php).');
+    if (!isset($conn) || !($conn instanceof mysqli)) throw new RuntimeException('../config.php không tạo biến $conn (mysqli).');
+    if ($conn->connect_error) throw new RuntimeException('Lỗi kết nối MySQL: ' . $conn->connect_error);
     return $conn;
 }
 
