@@ -1530,6 +1530,10 @@ function vbf_dir() {
 }
 
 function vbf_ffmpeg() {
+    if (getenv('GITHUB_ACTIONS') === 'true' && function_exists('shell_exec')) {
+        $sys = trim((string)@shell_exec('command -v ffmpeg 2>/dev/null'));
+        if ($sys !== '' && is_executable($sys)) return $sys;
+    }
     $cands = [vb_tts_conf('FFMPEG_PATH'), dirname(__DIR__) . '/ff/ffmpeg', __DIR__ . '/ff/ffmpeg', dirname(__DIR__) . '/ff/ffmpeg.exe', __DIR__ . '/ff/ffmpeg.exe'];
     foreach ($cands as $p) {
         if ($p === '' || !is_file($p)) continue;
@@ -2896,6 +2900,7 @@ function vbf_run($dir, array $o, array $player, array $env) {
                 $thumbDone = true;
             }
             $jpg = $R->jpeg(93);
+            if ($jpg === '' || $jpg === false) { $failed = 'PHP GD không xuất được ảnh JPEG ở khung hình ' . $f . ' (kiểm tra php-gd có hỗ trợ JPEG).'; break 2; }
             $w = @fwrite($pipes[0], $jpg);
             if ($w === false || $w === 0) { $failed = 'ffmpeg đã dừng đột ngột khi nhận khung hình ' . $f . '.'; break 2; }
             $wroteFrames++;
