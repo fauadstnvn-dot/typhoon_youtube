@@ -37,12 +37,40 @@ jobs:
       - name: Ghi config.php và token YouTube từ secrets
         env:
           CONFIG_PHP: ${{ secrets.CONFIG_PHP }}
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASS: ${{ secrets.DB_PASS }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          VBEE_APP_ID: ${{ secrets.VBEE_APP_ID }}
+          VBEE_TOKEN: ${{ secrets.VBEE_TOKEN }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_TOKENS_JSON: ${{ secrets.YOUTUBE_TOKENS_JSON }}
         run: |
           set -eu
           dir="$(cd "$VIDEO_DIR" && pwd)"
           parent="$(dirname "$dir")"
-          printf '%s' "$CONFIG_PHP" > "$parent/config.php"
+          if [ -n "$CONFIG_PHP" ]; then
+            printf '%s' "$CONFIG_PHP" > "$parent/config.php"
+          else
+            echo "Không có secret CONFIG_PHP - tự sinh config.php từ secret DB_*, VBEE_*, YOUTUBE_*"
+            php -r '
+              $o = "<?php\n";
+              foreach (["VBEE_APP_ID","VBEE_TOKEN","YOUTUBE_CLIENT_ID","YOUTUBE_CLIENT_SECRET"] as $k) {
+                  $o .= "define(" . var_export($k, true) . ", " . var_export((string)getenv($k), true) . ");\n";
+              }
+              $o .= "mysqli_report(MYSQLI_REPORT_OFF);\n";
+              $o .= "\$conn = @new mysqli(" . var_export((string)getenv("DB_HOST"), true) . ", "
+                  . var_export((string)getenv("DB_USER"), true) . ", "
+                  . var_export((string)getenv("DB_PASS"), true) . ", "
+                  . var_export((string)getenv("DB_NAME"), true) . ", "
+                  . ((int)getenv("DB_PORT") ?: 3306) . ");\n";
+              $o .= "if (!\$conn->connect_error) { \$conn->set_charset(\"utf8mb4\"); }\n";
+              file_put_contents($argv[1], $o);
+            ' "$parent/config.php"
+          fi
+          php -r 'require $argv[1]; if (!isset($conn)) { fwrite(STDERR, "config.php không tạo biến \$conn\n"); exit(1);} if ($conn->connect_error) { fwrite(STDERR, "Lỗi MySQL: " . $conn->connect_error . "\n"); exit(1);} echo "Kết nối MySQL OK\n";' "$parent/config.php"
           printf '%s' "$YOUTUBE_TOKENS_JSON" > "$dir/youtube_tokens.json"
           chmod 600 "$parent/config.php" "$dir/youtube_tokens.json"
           [ -f "$dir/vn.json" ] && [ ! -f "$parent/vn.json" ] && cp "$dir/vn.json" "$parent/vn.json" || true
