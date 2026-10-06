@@ -2,6 +2,9 @@ name: Storm bulletin video
 
 on:
   workflow_dispatch:
+  schedule:
+    # GitHub cron chạy theo UTC. 02:30, 05:30, ..., 23:30 giờ GMT+7 (mỗi 3 giờ) = 19:30, 22:30, 01:30, ..., 16:30 UTC
+    - cron: '30 1,4,7,10,13,16,19,22 * * *'
 
 concurrency:
   group: storm-video
