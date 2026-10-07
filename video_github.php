@@ -262,7 +262,22 @@ function vg_strip_accents($s) {
     return $s;
 }
 
+// Ưu tiên tiêu đề/mô tả/tag do video.php tạo (vb_yt_meta: có điểm nhấn đổ bộ / Biển Đông, tóm tắt số liệu, tag theo tỉnh).
+// Chỉ tự tạo khi video.php bản cũ chưa trả trường "meta".
 function vg_meta(array $api) {
+    $m = $api['meta'] ?? null;
+    if (is_array($m) && trim((string)($m['title'] ?? '')) !== '' && trim((string)($m['description'] ?? '')) !== '') {
+        $tags = array_values(array_filter(array_map(fn($t) => trim(vg_clean($t)), (array)($m['tags'] ?? [])), fn($t) => $t !== ''));
+        return [
+            'title'       => vg_clean(mb_substr(vg_norm($m['title']), 0, 100)),
+            'description' => vg_clean((string)$m['description']),
+            'tags'        => $tags,
+        ];
+    }
+    return vg_meta_fallback($api);
+}
+
+function vg_meta_fallback(array $api) {
     $player = $api['player'];
     $name = (string)$player['name'];
     $no = (string)$player['no'];
