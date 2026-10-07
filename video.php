@@ -192,7 +192,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && strpos((string)($_POST['act
     $voice = vb_tts_voice($_POST['voice'] ?? '');
     $speed = vb_tts_speed($_POST['speed'] ?? 1);
 
-    // Câu nào đã có sẵn mp3 cho đúng giọng + tốc độ + văn bản đọc.
+    // Câu n��o đã có sẵn mp3 cho đúng giọng + tốc độ + văn bản đọc.
     if ($action === 'tts_lookup') {
         $texts = json_decode((string)($_POST['texts'] ?? '[]'), true);
         $urls = [];
@@ -563,29 +563,59 @@ function vb_move_parts($item) {
     if (isset(VB_COMPASS_JP[$key])) $dir = VB_COMPASS_VI[VB_COMPASS_JP[$key]];
     elseif (isset(VB_COMPASS_VI[$key])) $dir = VB_COMPASS_VI[$key];
 
-    return ['dir' => $dir, 'kmh' => $kmh, 'slow' => $slow, 'stationary' => $stationary];
+    $speedClass = vb_speed_class($kmh, $stationary, $slow);
+    return ['dir' => $dir, 'kmh' => $kmh, 'slow' => $slow, 'stationary' => $stationary || $speedClass === 'still', 'speedClass' => $speedClass];
 }
 
-// Câu di chuyển: "di chuyển theo hướng Tây Tây Bắc, mỗi giờ đi được khoảng 15 km".
-function vb_move($item) {
+// Phân loại tốc độ di chuyển của bão theo km/h:
+// < 5 gần như đứng yên | 5-<10 rất chậm | 10-<15 chậm | 15-<20 bình thường (không ghi trạng thái) | 20-<25 nhanh | >= 25 rất nhanh.
+// Không có số km/h thì dựa vào nhãn "chậm"/"đứng yên" của JMA.
+function vb_speed_class($kmh, $stationary = false, $slow = false) {
+    if ($stationary) return 'still';
+    if ($kmh === null) return $slow ? 'slow' : null;
+    if ($kmh < 5) return 'still';
+    if ($kmh < 10) return 'veryslow';
+    if ($kmh < 15) return 'slow';
+    if ($kmh < 20) return null;
+    if ($kmh < 25) return 'fast';
+    return 'veryfast';
+}
+
+// Cụm trạng thái tốc độ đi kèm động từ di chuyển ('' nếu không có).
+function vb_speed_adverb($class) {
+    switch ($class) {
+        case 'veryslow': return ' rất chậm';
+        case 'slow':     return ' chậm';
+        case 'fast':     return ' nhanh';
+        case 'veryfast': return ' rất nhanh';
+    }
+    return '';
+}
+
+// Câu di chuyển: "di chuyển nhanh theo hướng Tây Tây Bắc, mỗi giờ ��i được khoảng 22 km".
+// $withSpeed = false: chỉ nêu hướng (khi câu "đổi tốc độ" ngay sau đã nói tốc độ).
+function vb_move($item, $withSpeed = true) {
     $m = vb_move_parts($item);
-    if ($m['stationary']) return vb_pick('still', ['gần như đứng yên', 'hầu như ít di chuyển', 'gần như không dịch chuyển']);
+    if ($m['stationary']) return vb_pick('still', ['gần như đứng yên', 'hầu như không di chuyển', 'gần như không dịch chuyển']);
+    if (!$withSpeed && $m['dir']) return vb_pick('move-verb', ['di chuyển', 'dịch chuyển']) . ' theo hướng ' . $m['dir'];
     $speedText = $m['kmh'] ? vb_pick('speed', [
         'mỗi giờ đi được khoảng ' . $m['kmh'] . ' km',
         'với tốc độ khoảng ' . $m['kmh'] . ' km/h',
         'tốc độ di chuyển khoảng ' . $m['kmh'] . ' km mỗi giờ',
     ]) : null;
     $verb = vb_pick('move-verb', ['di chuyển', 'dịch chuyển']);
-    if ($m['dir']) return $verb . ($m['slow'] ? ' chậm' : '') . ' theo hướng ' . $m['dir'] . ($speedText ? ', ' . $speedText : '');
-    if ($speedText) return 'di chuyển ' . ($m['slow'] ? 'chậm, ' : '') . $speedText;
-    return $m['slow'] ? 'di chuyển chậm' : '';
+    $adv = vb_speed_adverb($m['speedClass']);
+    if ($m['dir']) return $verb . $adv . ' theo hướng ' . $m['dir'] . ($speedText ? ', ' . $speedText : '');
+    if ($speedText) return 'di chuyển' . $adv . ', ' . $speedText;
+    return $adv !== '' ? 'di chuyển' . $adv : '';
 }
 
 // Nhãn ngắn hiển thị trên bản đồ khi bão tịnh tiến.
 function vb_move_tag($item) {
     $m = vb_move_parts($item);
     if ($m['stationary']) return 'Gần như đứng yên';
-    $parts = array_filter([$m['dir'] ? 'Hướng ' . $m['dir'] : null, $m['kmh'] ? $m['kmh'] . ' km/h' : null]);
+    $label = trim(vb_speed_adverb($m['speedClass']));
+    $parts = array_filter([$m['dir'] ? 'Hướng ' . $m['dir'] : null, $m['kmh'] ? $m['kmh'] . ' km/h' : null, $label !== '' ? vb_ucfirst($label) : null]);
     return $parts ? implode(' · ', $parts) : null;
 }
 
@@ -615,8 +645,8 @@ function vb_pick($slot, array $opts) {
 function vb_trend($prevLv, $nextLv) {
     $prevC = vb_class($prevLv);
     $nextC = vb_class($nextLv);
-    if ($nextLv === null) return vb_pick('trend-down', ['suy yếu dần', 'yếu đi nhanh', 'suy yếu dần đi']);
-    if ($prevLv === null) return '';
+    // Mốc tan: câu "suy yếu và tan dần" riêng đã nói, không lặp ở câu di chuyển.
+    if ($nextLv === null || $prevLv === null) return '';
     if ($nextC !== $prevC) {
         if ($nextLv > $prevLv) return vb_pick('trend-up-cls', ['có khả năng mạnh lên thành ', 'có thể mạnh lên thành ', 'nhiều khả năng mạnh lên thành ']) . $nextC;
         $to = $nextC === 'vùng áp thấp' ? 'một vùng áp thấp' : $nextC;
@@ -746,6 +776,33 @@ function vb_ucfirst($s) {
     return mb_strtoupper(mb_substr($s, 0, 1, 'UTF-8'), 'UTF-8') . mb_substr($s, 1, null, 'UTF-8');
 }
 
+// Áp suất thấp nhất gần tâm (hPa) - cùng trường "pressure" mà ty.php đọc từ spec_json của JMA.
+function vb_pressure($item) {
+    $p = $item['pressure'] ?? null;
+    if (is_array($p)) $p = $p['hPa'] ?? $p['hpa'] ?? null;
+    if (!is_numeric($p)) return null;
+    $p = (float)$p;
+    return ($p >= 850 && $p <= 1100) ? (int)round($p) : null;
+}
+
+function vb_pressure_sentence($cls, $pres, $now = true) {
+    if ($pres === null || $cls === 'tan') return null;
+    $n = vb_center_noun($cls);
+    $val = $pres . ' hPa';
+    if ($now) {
+        return vb_pick('pres-now', [
+            'Áp suất thấp nhất gần tâm ' . $n . ' khoảng ' . $val . '.',
+            'Khí áp thấp nhất ở vùng gần tâm ' . $n . ' vào khoảng ' . $val . '.',
+            'Hiện áp suất thấp nhất gần tâm ' . $n . ' đạt khoảng ' . $val . '.',
+        ]);
+    }
+    return vb_pick('pres-fc', [
+        'Áp suất thấp nhất gần tâm ' . $n . ' dự báo khoảng ' . $val . '.',
+        'Khí áp thấp nhất gần tâm ' . $n . ' được dự báo vào khoảng ' . $val . '.',
+        'Dự báo áp suất thấp nhất gần tâm ' . $n . ' ở mức ' . $val . '.',
+    ]);
+}
+
 function vb_point($item) {
     $sus = vb_wind_ms($item['maximumWind']['sustained'] ?? null);
     $gust = vb_wind_ms($item['maximumWind']['gust'] ?? null);
@@ -759,10 +816,105 @@ function vb_point($item) {
         'coord' => vb_coord_text($lat, $lon),
         'sus'   => $sus,
         'gust'  => $gust,
+        'pres'  => vb_pressure($item),
         'lv'    => $lv,
         'cls'   => vb_class($lv),
         'move'  => vb_move($item),
+        'mp'    => vb_move_parts($item),
     ];
+}
+
+// Phương vị (độ) của tên hướng tiếng Việt, null nếu không rõ.
+function vb_dir_deg($name) {
+    if (!$name) return null;
+    $i = array_search($name, array_values(VB_COMPASS_VI), true);
+    return $i === false ? null : $i * 22.5;
+}
+
+// Bậc tốc độ: 0 đứng yên, 1 rất chậm, 2 chậm, 3 bình thường, 4 nhanh, 5 rất nhanh; null nếu không rõ.
+function vb_speed_rank($mp) {
+    if (!$mp) return null;
+    switch ($mp['speedClass']) {
+        case 'still': return 0;
+        case 'veryslow': return 1;
+        case 'slow': return 2;
+        case 'fast': return 4;
+        case 'veryfast': return 5;
+    }
+    return $mp['kmh'] !== null ? 3 : null;
+}
+
+// Đổi bậc tốc độ đáng kể: khác bậc, và nếu có số km/h thì chênh tối thiểu 5 km/h (18 -> 20 km/h không tính).
+function vb_speed_changed($pm, $fm) {
+    $r0 = vb_speed_rank($pm); $r1 = vb_speed_rank($fm);
+    if ($r0 === null || $r1 === null || $r0 === $r1) return false;
+    if ($pm['kmh'] !== null && $fm['kmh'] !== null && abs($fm['kmh'] - $pm['kmh']) < 5) return false;
+    return true;
+}
+
+// Bão / siêu bão xuống áp thấp nhiệt đới hoặc vùng áp thấp giữa 2 mốc.
+function vb_is_weaken($prev, $fc) {
+    return in_array($prev['cls'], ['bão', 'siêu bão'], true) && in_array($fc['cls'], ['áp thấp nhiệt đới', 'vùng áp thấp'], true);
+}
+
+// Câu + hoạt ảnh suy yếu. $lead = "Đến 7 giờ ngày 12 tháng 10, " (nói rõ thời điểm) hoặc "Lúc đó, ".
+function vb_weaken_cue($prev, $fc, $k, $name, $lead, $hasXY) {
+    $to = $fc['cls'] === 'vùng áp thấp' ? 'một vùng áp thấp' : 'áp thấp nhiệt đới';
+    $subj = vb_subject_var($prev['cls'], $name);
+    $text = vb_ucfirst($lead . $subj . vb_pick('weak', [
+        ' sẽ suy yếu thành ' . $to . '.',
+        ' được dự báo suy yếu thành ' . $to . '.',
+        ' sẽ yếu đi thành ' . $to . '.',
+    ]));
+    return vb_cue($text, $hasXY ? 'shift' : 'info', $k, ['shift' => ['kind' => 'weaken', 'title' => 'Suy yếu', 'lab' => vb_ucfirst($fc['cls']), 'col' => '#f59e0b']]);
+}
+
+// Đổi hướng / đổi tốc độ giữa 2 mốc. Đặt ngay sau câu di chuyển nên diễn đạt dạng so sánh, không lặp lại câu trước.
+function vb_change_cues($prev, $fc, $k, $name, $hasXY) {
+    $out = [];
+    $act = $hasXY ? 'shift' : 'info';
+    $pm = $prev['mp'] ?? null; $fm = $fc['mp'] ?? null;
+    if (!$pm || !$fm) return $out;
+
+    if (!$pm['stationary'] && !$fm['stationary']) {
+        $a0 = vb_dir_deg($pm['dir']); $a1 = vb_dir_deg($fm['dir']);
+        if ($a0 !== null && $a1 !== null) {
+            $delta = fmod($a1 - $a0 + 540, 360) - 180;
+            if (abs($delta) >= 45) {
+                $subj = vb_subject_var($prev['cls'], $name);
+                $text = vb_pick('turn', [
+                    'So với trước đó, ' . $subj . ' sẽ đổi hướng, từ hướng ' . $pm['dir'] . ' chuyển sang hướng ' . $fm['dir'] . '.',
+                    'Đáng chú ý, ' . $subj . ' sẽ chuyển hướng từ ' . $pm['dir'] . ' sang ' . $fm['dir'] . '.',
+                    vb_ucfirst($subj) . ' có sự chuyển hướng rõ rệt, từ hướng ' . $pm['dir'] . ' sang hướng ' . $fm['dir'] . '.',
+                ]);
+                $out[] = vb_cue($text, $act, $k, ['shift' => ['kind' => 'turn', 'title' => 'Đổi hướng', 'lab' => $fm['dir'], 'col' => '#a78bfa',
+                    'a0' => $a0, 'a1' => $a0 + $delta, 'l0' => 70, 'l1' => 70]]);
+            }
+        }
+    }
+
+    if (vb_speed_changed($pm, $fm)) {
+        $r0 = vb_speed_rank($pm); $r1 = vb_speed_rank($fm);
+        $up = $r1 > $r0;
+        $subj = vb_subject_var($prev['cls'], $name);
+        $lead = $out ? 'Đồng thời, ' : vb_pick('spd-lead', ['So với trước đó, ', 'Cũng trong thời gian này, ']);
+        $word = $up ? vb_pick('spd-up', ['di chuyển nhanh dần', 'tăng tốc', 'di chuyển nhanh hơn'])
+                    : vb_pick('spd-dn', ['di chuyển chậm lại', 'giảm tốc độ di chuyển', 'di chuyển chậm dần']);
+        $kmh = ($pm['kmh'] !== null && $fm['kmh'] !== null && $pm['kmh'] !== $fm['kmh'])
+            ? ', tốc độ ' . ($up ? 'tăng' : 'giảm') . ' từ khoảng ' . $pm['kmh'] . ' ' . ($up ? 'lên' : 'xuống') . ' khoảng ' . $fm['kmh'] . ' km/h' : '';
+        $text = $lead . $subj . ' ' . $word . $kmh . '.';
+        $dirDeg = vb_dir_deg($fm['dir']) ?? vb_dir_deg($pm['dir']) ?? 0;
+        $col = $r1 >= 4 ? '#ef4444' : ($r1 === 3 ? '#22c55e' : '#38bdf8');
+        $lab = $fm['kmh'] !== null ? $fm['kmh'] . ' km/h' : ($up ? 'Nhanh dần' : 'Chậm lại');
+        $out[] = vb_cue($text, $act, $k, ['shift' => ['kind' => 'speed', 'title' => $up ? 'Tăng tốc' : 'Giảm tốc', 'lab' => $lab, 'col' => $col,
+            'a0' => $dirDeg, 'a1' => $dirDeg, 'l0' => 30 + $r0 * 14, 'l1' => 30 + $r1 * 14]]);
+    }
+    return $out;
+}
+
+// Biển Đông (xấp xỉ theo khung kinh/vĩ độ, đủ dùng cho tiêu đề/tag).
+function vb_in_bien_dong($lat, $lon) {
+    return $lat !== null && $lon !== null && $lat >= 3 && $lat <= 23.5 && $lon >= 105 && $lon <= 120.5;
 }
 
 function vb_cue($text, $act, $pt, array $extra = []) {
@@ -1098,6 +1250,7 @@ function vb_mainland() {
         $polys = $g['type'] === 'Polygon' ? [$g['coordinates']] : ($g['type'] === 'MultiPolygon' ? $g['coordinates'] : []);
         $name = trim((string)($ft['properties']['adm1_name1'] ?? $ft['properties']['adm1_name'] ?? ''));
         if ($name === '' || !$polys) continue;
+        $type = trim((string)($ft['properties']['adm1_type_vi'] ?? ''));
         $parts = [];
         foreach ($polys as $poly) {
             $outer = $poly[0] ?? null;
@@ -1115,7 +1268,7 @@ function vb_mainland() {
                 $minY = min($minY, $c[1]); $maxY = max($maxY, $c[1]);
             }
             if ($minX > 109.6) continue; // không có đất liền nào của Việt Nam ở xa hơn kinh độ này
-            $cache[] = ['name' => $name, 'ring' => $p['ring'], 'bbox' => [$minX, $minY, $maxX, $maxY]];
+            $cache[] = ['name' => $name, 'type' => $type, 'ring' => $p['ring'], 'bbox' => [$minX, $minY, $maxX, $maxY]];
         }
     }
     return $cache;
@@ -1139,19 +1292,26 @@ function vb_point_in_ring($x, $y, array $ring) {
 // -> null | ['onLand'=>bool, 'prov'=>tên tỉnh gốc, 'km'=>int, 'lat','lon' = điểm đất liền gần nhất]
 function vb_nearest_mainland($lat, $lon) {
     if ($lat === null || $lon === null) return null;
+    static $memo = [];
+    $key = $lat . '|' . $lon;
+    if (!array_key_exists($key, $memo)) $memo[$key] = vb_nearest_mainland_calc($lat, $lon);
+    return $memo[$key];
+}
+
+function vb_nearest_mainland_calc($lat, $lon) {
     $parts = vb_mainland();
     if (!$parts) return null;
 
     foreach ($parts as $p) {
         [$x0, $y0, $x1, $y1] = $p['bbox'];
         if ($lon >= $x0 && $lon <= $x1 && $lat >= $y0 && $lat <= $y1 && vb_point_in_ring($lon, $lat, $p['ring'])) {
-            return ['onLand' => true, 'prov' => $p['name'], 'km' => 0, 'lat' => $lat, 'lon' => $lon];
+            return ['onLand' => true, 'prov' => $p['name'], 'type' => $p['type'] ?? '', 'km' => 0, 'lat' => $lat, 'lon' => $lon];
         }
     }
 
     // Chiếu phẳng cục bộ quanh tâm bão (đủ chính xác ở quy mô vài nghìn km để tìm điểm gần nhất).
     $kx = 111.32 * cos(deg2rad($lat)); $ky = 110.57;
-    $best = INF; $bestPt = null; $bestName = null;
+    $best = INF; $bestPt = null; $bestName = null; $bestType = '';
     foreach ($parts as $p) {
         [$x0, $y0, $x1, $y1] = $p['bbox'];
         $dx = max($x0 - $lon, 0, $lon - $x1) * $kx;
@@ -1166,63 +1326,100 @@ function vb_nearest_mainland($lat, $lon) {
             $t = $len2 > 0 ? max(0, min(1, -($ax * $vx + $ay * $vy) / $len2)) : 0;
             $px = $ax + $t * $vx; $py = $ay + $t * $vy;
             $d2 = $px * $px + $py * $py;
-            if ($d2 < $best) { $best = $d2; $bestPt = [$lat + $py / $ky, $lon + $px / $kx]; $bestName = $p['name']; }
+            if ($d2 < $best) { $best = $d2; $bestPt = [$lat + $py / $ky, $lon + $px / $kx]; $bestName = $p['name']; $bestType = $p['type'] ?? ''; }
         }
     }
     if (!$bestPt) return null;
     $km = vb_haversine_km($lat, $lon, $bestPt[0], $bestPt[1]);
     $km = $km < 100 ? (int)(round($km / 5) * 5) : (int)(round($km / 10) * 10);
-    return ['onLand' => false, 'prov' => $bestName, 'km' => max(5, $km), 'lat' => round($bestPt[0], 4), 'lon' => round($bestPt[1], 4)];
+    // Hướng của bão so với điểm đất liền gần nhất (từ đất liền nhìn ra tâm bão).
+    $bearing = vb_bearing_deg($bestPt[0], $bestPt[1], $lat, $lon);
+    return ['onLand' => false, 'prov' => $bestName, 'type' => $bestType, 'km' => max(5, $km), 'lat' => round($bestPt[0], 4), 'lon' => round($bestPt[1], 4),
+            'dir' => vb_bearing_vi($bearing)];
+}
+
+// Phương vị (độ, 0 = Bắc, theo chiều kim đồng hồ) từ điểm 1 tới điểm 2.
+function vb_bearing_deg($lat1, $lon1, $lat2, $lon2) {
+    $p1 = deg2rad($lat1); $p2 = deg2rad($lat2); $dl = deg2rad($lon2 - $lon1);
+    $y = sin($dl) * cos($p2);
+    $x = cos($p1) * sin($p2) - sin($p1) * cos($p2) * cos($dl);
+    return fmod(rad2deg(atan2($y, $x)) + 360, 360);
+}
+
+// 16 hướng la bàn theo cách gọi của Việt Nam.
+function vb_bearing_vi($deg) {
+    static $names = ['Bắc', 'Bắc Đông Bắc', 'Đông Bắc', 'Đông Đông Bắc', 'Đông', 'Đông Đông Nam', 'Đông Nam', 'Nam Đông Nam',
+                     'Nam', 'Nam Tây Nam', 'Tây Nam', 'Tây Tây Nam', 'Tây', 'Tây Tây Bắc', 'Tây Bắc', 'Bắc Tây Bắc'];
+    return $names[(int)floor(fmod($deg + 11.25, 360) / 22.5) % 16];
 }
 
 // "Tỉnh Quảng Ngãi" / "Quang Ngai" / "TP. Đà Nẵng" -> "tỉnh Quảng Ngãi" / "thành phố Đà Nẵng"
 function vb_prov_short($raw) {
     return trim(preg_replace('/^(tỉnh|thành phố|tp\.?)\s+/iu', '', trim((string)$raw)));
 }
-function vb_prov_phrase($raw) {
+// Ghép loại đơn vị (adm1_type_vi) + tên (adm1_name1) trong vn.json: "tỉnh Thái Nguyên", "thành phố Hải Phòng".
+// Riêng Hà Nội gọi là "thủ đô Hà Nội".
+function vb_prov_phrase($raw, $type = '') {
     $n = vb_prov_short($raw);
-    $isCity = preg_match('/^(thành phố|tp\.?)\s/iu', trim((string)$raw))
-        || preg_match('/^(Hà Nội|Hồ Chí Minh|Hải Phòng|Đà Nẵng|Cần Thơ|Huế|Thừa Thiên Huế)$/u', $n);
-    return ($isCity ? 'thành phố ' : 'tỉnh ') . $n;
+    if (preg_match('/^Hà Nội$/u', $n)) return 'thủ đô Hà Nội';
+    $t = mb_strtolower(trim((string)$type), 'UTF-8');
+    if ($t === '') {
+        $isCity = preg_match('/^(thành phố|tp\.?)\s/iu', trim((string)$raw))
+            || preg_match('/^(Hồ Chí Minh|Hải Phòng|Đà Nẵng|Cần Thơ|Huế|Thừa Thiên Huế)$/u', $n);
+        $t = $isCity ? 'thành phố' : 'tỉnh';
+    }
+    return $t . ' ' . $n;
 }
 
 function vb_km_text($km) { return number_format($km, 0, ',', '.'); }
 
-// Câu "cách đất liền" cho 1 vị trí (null nếu quá xa / không có dữ liệu).
-function vb_land_cue($p, $k) {
+// Vĩ độ lớn hơn ngưỡng này (°N) thì không nhắc khoảng cách tới đất liền Việt Nam.
+const VB_LAND_MAX_LAT = 40;
+
+// Câu "cách đất liền" cho 1 vị trí. Trả về null khi:
+//  - vĩ độ > 40°N, quá xa / không có dữ liệu;
+//  - bão không nằm ở hướng có chữ "Đông" so với đất liền (chỉ bão phía đông mới ghi "còn cách").
+// Bão trên đất liền Việt Nam thì chỉ ghi rõ đang ở địa phương nào, không ghi "còn cách".
+// $afterThen = true khi câu vị trí ngay trước đã mở đầu bằng "Lúc đó/Khi ấy" -> đổi từ dẫn để không lặp.
+function vb_land_cue($p, $k, $afterThen = false) {
     if ($p['lat'] === null || $p['cls'] === 'tan') return null;
+    if ($p['lat'] > VB_LAND_MAX_LAT) return null;
     $d = vb_nearest_mainland($p['lat'], $p['lon']);
     if (!$d) return null;
     $noun = vb_center_noun($p['cls']);
-    $prov = vb_prov_phrase($d['prov']);
+    $prov = vb_prov_phrase($d['prov'], $d['type'] ?? '');
     $km = vb_km_text($d['km']) . ' km';
-    $when = $k === 0 ? vb_pick('land-now', ['Lúc này', 'Hiện tại']) : vb_pick('land-then', ['Khi đó', 'Vào thời điểm này']);
+    $when = $afterThen ? 'Tại vị trí này'
+        : ($k === 0 ? vb_pick('land-now', ['Lúc này', 'Hiện tại']) : vb_pick('land-then', ['Khi đó', 'Vào thời điểm này']));
     if ($d['onLand']) {
         $s = vb_pick('land-on', [
             $when . ', tâm ' . $noun . ' nằm trên đất liền ' . $prov . '.',
             $when . ', tâm ' . $noun . ' đã đi vào đất liền, thuộc địa phận ' . $prov . '.',
             'Đây là vị trí nằm trên đất liền ' . $prov . '.',
         ]);
-    } elseif ($d['km'] <= VB_COAST_NEAR_KM) {
-        $s = vb_pick('land-near', [
-            $when . ', tâm ' . $noun . ' đã áp sát bờ biển ' . $prov . ', chỉ còn cách đất liền khoảng ' . $km . '.',
-            'Tâm ' . $noun . ' khi đó đã rất gần bờ biển ' . $prov . ', cách đất liền chỉ khoảng ' . $km . '.',
-        ]);
-    } elseif ($d['km'] <= VB_LAND_MAX_KM) {
-        $s = vb_pick('land-mid', [
-            'Vị trí này cách đất liền gần nhất của Việt Nam là ' . $prov . ' khoảng ' . $km . '.',
-            $when . ', tâm ' . $noun . ' cách đất liền ' . $prov . ' khoảng ' . $km . ', đây là điểm gần nhất trên đất liền nước ta.',
-            'Từ tâm ' . $noun . ' đến đất liền gần nhất của Việt Nam, thuộc ' . $prov . ', vào khoảng ' . $km . '.',
-            'Tại vị trí này, tâm ' . $noun . ' còn cách đất liền ' . $prov . ' khoảng ' . $km . '.',
-        ]);
     } else {
-        $s = vb_pick('land-far', [
-            'Vị trí này còn cách rất xa đất liền Việt Nam, cách ' . $prov . ' khoảng ' . $km . '.',
-            $when . ', tâm ' . $noun . ' vẫn còn ở rất xa nước ta, cách đất liền gần nhất là ' . $prov . ' khoảng ' . $km . '.',
-            'Tâm ' . $noun . ' còn cách rất xa đất liền Việt Nam, khoảng ' . $km . ' nếu tính đến ' . $prov . '.',
-        ]);
+        $dir = $d['dir'] ?? '';
+        if (mb_stripos($dir, 'Đông') === false) return null;
+        $where = 'ở phía ' . $dir . ' của đất liền ' . $prov;
+        if ($d['km'] <= VB_COAST_NEAR_KM) {
+            $s = vb_pick('land-near', [
+                $when . ', tâm ' . $noun . ' đã áp sát bờ biển ' . $prov . ', nằm ở hướng ' . $dir . ' và chỉ còn cách đất liền khoảng ' . $km . '.',
+                'Tâm ' . $noun . ' khi đó đã rất gần bờ biển ' . $prov . ', ở hướng ' . $dir . ', cách đất liền chỉ khoảng ' . $km . '.',
+            ]);
+        } elseif ($d['km'] <= VB_LAND_MAX_KM) {
+            $s = vb_pick('land-mid', [
+                $when . ', tâm ' . $noun . ' ' . $where . ', còn cách đất liền khoảng ' . $km . '.',
+                'Tâm ' . $noun . ' nằm ' . $where . ', còn cách khoảng ' . $km . ', đây là điểm gần nhất trên đất liền nước ta.',
+                'Từ tâm ' . $noun . ' đến đất liền gần nhất của Việt Nam, thuộc ' . $prov . ', còn khoảng ' . $km . ', tâm ở hướng ' . $dir . ' so với đất liền.',
+            ]);
+        } else {
+            $s = vb_pick('land-far', [
+                $when . ', tâm ' . $noun . ' vẫn còn ở rất xa nước ta, ' . $where . ', cách khoảng ' . $km . '.',
+                'Tâm ' . $noun . ' còn cách rất xa đất liền Việt Nam, ở hướng ' . $dir . ', khoảng ' . $km . ' nếu tính đến ' . $prov . '.',
+            ]);
+        }
     }
-    return vb_cue($s, 'land', $k, ['land' => $d + ['provShort' => vb_prov_short($d['prov'])]]);
+    return vb_cue($s, 'land', $k, ['land' => $d + ['provShort' => vb_prov_short($d['prov']), 'provFull' => vb_prov_phrase($d['prov'], $d['type'] ?? '')]]);
 }
 
 // Dựng bản tin thành các cảnh (scene), mỗi cảnh gồm nhiều cue (câu + hành động bản đồ).
@@ -1247,11 +1444,21 @@ function vb_build_bulletin(array $storm, $conn = null) {
     $stormArea = null;
 
     vb_vary_state(($storm['id'] ?? '') . '|' . ($analysis['ts'] ?? ''));
-    $minLandKm = null;
-    $trackLand = function ($lc) use (&$minLandKm) {
-        if (!$lc || empty($lc['land'])) return;
-        $km = $lc['land']['onLand'] ? 0 : $lc['land']['km'];
-        if ($minLandKm === null || $km < $minLandKm) $minLandKm = $km;
+    // Tóm tắt địa lý (mọi hướng, kể cả khi không đọc câu "còn cách"): dùng cho lời khuyến cáo và SEO.
+    $geo = ['min' => null, 'nowOnLand' => null, 'landfall' => null, 'nowSCS' => false, 'fcSCS' => false];
+    $trackPt = function ($p, $k) use (&$geo) {
+        if ($p['lat'] === null || $p['cls'] === 'tan') return;
+        $scs = vb_in_bien_dong($p['lat'], $p['lon']);
+        if ($p['lat'] <= VB_LAND_MAX_LAT && ($d = vb_nearest_mainland($p['lat'], $p['lon']))) {
+            $info = ['km' => $d['onLand'] ? 0 : $d['km'], 'prov' => $d['prov'], 'type' => $d['type'] ?? '', 'k' => $k, 'ts' => $p['ts']];
+            if ($geo['min'] === null || $info['km'] < $geo['min']['km']) $geo['min'] = $info;
+            if ($d['onLand']) {
+                $scs = false;
+                if ($k === 0) $geo['nowOnLand'] = $info;
+                elseif (!$geo['nowOnLand'] && !$geo['landfall']) $geo['landfall'] = $info;
+            }
+        }
+        if ($scs) { if ($k === 0) $geo['nowSCS'] = true; else $geo['fcSCS'] = true; }
     };
 
     // Tên gọi dùng ở lời chào / lời kết.
@@ -1300,7 +1507,10 @@ function vb_build_bulletin(array $storm, $conn = null) {
         $s = vb_pick('pos-now', ['Hiện tại, vị trí tâm ' . $subject . $at0, 'Hiện nay, tâm ' . $subject . ' đang' . $at0]);
     }
     $sc = [vb_cue(vb_ucfirst($s), $hasXY0 ? 'position' : 'info', 0)];
-    if ($hasXY0 && ($lc = vb_land_cue($cur, 0))) { $sc[] = $lc; $trackLand($lc); }
+    if ($hasXY0) {
+        $trackPt($cur, 0);
+        if ($lc = vb_land_cue($cur, 0)) $sc[] = $lc;
+    }
 
 
 
@@ -1309,6 +1519,8 @@ function vb_build_bulletin(array $storm, $conn = null) {
     } else {
         $w = vb_wind_sentence($cur['cls'], $cur['lv'], $cur['gust']);
         if ($w) $sc[] = vb_cue($w, 'wind', 0);
+        $ps = vb_pressure_sentence($cur['cls'], $cur['pres'], true);
+        if ($ps) $sc[] = vb_cue($ps, ($hasXY0 && $cur['pres'] !== null) ? 'pressure' : 'info', 0);
         // Bán kính gió chỉ lấy ở thời điểm hiện tại (giống ty.php) và chỉ khi spec_json còn dữ liệu.
         $noun = vb_center_noun($cur['cls']);
         $trackR = vb_track_radii($storm['track'] ?? null);
@@ -1363,19 +1575,33 @@ function vb_build_bulletin(array $storm, $conn = null) {
         $sc = [];
         $moved = false;
         $canMove = $hasXY && $lastPos !== null;
-        $trend = vb_trend($prev['lv'], $fc['lv']);
-        $clauses = array_values(array_filter([$fc['move'], $trend], fn($x) => $x !== ''));
+        // Suy yếu thành áp thấp: nói ở câu riêng kèm thời điểm, không lặp trong câu di chuyển.
+        $weaken = vb_is_weaken($prev, $fc);
+        $trend = $weaken ? '' : vb_trend($prev['lv'], $fc['lv']);
+        $speedChange = $fc['cls'] !== 'tan' && !empty($prev['mp']) && !empty($fc['mp']) && !$fc['mp']['stationary'] && vb_speed_changed($prev['mp'], $fc['mp']);
+        $moveTxt = $speedChange ? vb_move($fc['item'], false) : $fc['move'];
+        $clauses = array_values(array_filter([$moveTxt, $trend], fn($x) => $x !== ''));
         if ($clauses) {
             $sc[] = vb_cue($lead . ', ' . vb_subject_var($prev['cls'], $name) . ' ' . implode(' và ', $clauses) . '.',
                 $canMove ? 'move' : 'info', $k,
                 $canMove ? ['from' => $lastPos, 'tag' => vb_move_tag($fc)] : []);
             $moved = $canMove;
+            if ($fc['cls'] !== 'tan') foreach (vb_change_cues($prev, $fc, $k, $name, $hasXY) as $chc) $sc[] = $chc;
         }
         // Không có câu di chuyển thì tịnh tiến ngay khi đọc vị trí.
         $from = (!$moved && $canMove) ? ['from' => $lastPos] : [];
 
         $t = vb_time_text($fc['ts']);
         $at = $t ? vb_pick('at', ['Đến ', 'Tới ', 'Đến khoảng ']) . $t . ', ' : '';
+        $then = vb_pick('at-then', ['Lúc đó, ', 'Khi ấy, ']);
+        // Có câu di chuyển (bão đã tịnh tiến tới mốc) thì báo suy yếu trước, kèm thời điểm; câu vị trí dùng "Lúc đó".
+        $weakFirst = $weaken && $clauses;
+        $atPos = $at;
+        if ($weakFirst) {
+            $sc[] = vb_weaken_cue($prev, $fc, $k, $name, $at, $hasXY);
+            if ($at !== '') $atPos = $then;
+        }
+        if ($hasXY) $trackPt($fc, $k);
         if ($fc['cls'] === 'tan') {
             $loc = $fc['coord'] ? ' ở khu vực khoảng ' . $fc['coord'] : '';
             $sc[] = vb_cue(vb_ucfirst($at . vb_pick('tan', [
@@ -1386,16 +1612,19 @@ function vb_build_bulletin(array $storm, $conn = null) {
         } else {
             if ($fc['coord']) {
                 $n = vb_center_noun($fc['cls']);
-                $sc[] = vb_cue(vb_ucfirst($at . vb_pick('pos-fc', [
+                $sc[] = vb_cue(vb_ucfirst($atPos . vb_pick('pos-fc', [
                     'vị trí tâm ' . $n . ' ở vào khoảng ' . $fc['coord'] . '.',
                     'tâm ' . $n . ' ở vào khoảng ' . $fc['coord'] . '.',
                     'tâm ' . $n . ' được dự báo ở vào khoảng ' . $fc['coord'] . '.',
                     'tâm ' . $n . ' sẽ nằm ở vào khoảng ' . $fc['coord'] . '.',
                 ])), 'position', $k, $from);
-                if ($hasXY && ($lc = vb_land_cue($fc, $k))) { $sc[] = $lc; $trackLand($lc); }
+                if ($hasXY && ($lc = vb_land_cue($fc, $k, $atPos !== $at))) $sc[] = $lc;
             }
+            if ($weaken && !$weakFirst) $sc[] = vb_weaken_cue($prev, $fc, $k, $name, $fc['coord'] && $at !== '' ? $then : $at, $hasXY);
             $w = vb_wind_sentence($fc['cls'], $fc['lv'], $fc['gust']);
             if ($w) $sc[] = vb_cue($w, 'wind', $k);
+            $ps = vb_pressure_sentence($fc['cls'], $fc['pres'], false);
+            if ($ps) $sc[] = vb_cue($ps, ($hasXY && $fc['pres'] !== null) ? 'pressure' : 'info', $k);
         }
         if ($sc) $scenes[] = $sc;
         if ($hasXY) $lastPos = $k;
@@ -1404,11 +1633,20 @@ function vb_build_bulletin(array $storm, $conn = null) {
 
     // Lời kết: nhắc nhở phù hợp khoảng cách thực tế, rồi cảm ơn và tạm biệt.
     $end = [];
-    if ($minLandKm !== null && $minLandKm <= 500) {
-        $end[] = vb_cue(vb_pick('advice-near', [
-            'Người dân tại các tỉnh ven biển cần thường xuyên theo dõi các bản tin tiếp theo để chủ động phòng tránh.',
-            'Các bạn ở khu vực ven biển và trên biển nên cập nhật thông tin thường xuyên để chủ động ứng phó.',
-        ]), 'outro', 0);
+    $near = $geo['min'];
+    if ($near !== null && $near['km'] <= 500) {
+        $where = vb_prov_phrase($near['prov'], $near['type']);
+        if ($geo['nowOnLand'] || $geo['landfall']) {
+            $end[] = vb_cue(vb_pick('advice-land', [
+                'Người dân tại ' . $where . ' và các địa phương lân cận cần đề phòng gió mạnh, mưa lớn, ngập lụt và sạt lở đất, đồng thời thường xuyên theo dõi các bản tin tiếp theo.',
+                'Các bạn ở ' . $where . ' và khu vực lân cận cần chủ động gia cố nhà cửa, đề phòng mưa lớn, lũ quét và sạt lở đất trong những ngày tới.',
+            ]), 'outro', 0);
+        } else {
+            $end[] = vb_cue(vb_pick('advice-near', [
+                'Người dân tại ' . $where . ' và các tỉnh ven biển lân cận cần thường xuyên theo dõi các bản tin tiếp theo để chủ động phòng tránh.',
+                'Các bạn ở ' . $where . ', khu vực ven biển và tàu thuyền trên biển nên cập nhật thông tin thường xuyên để chủ động ứng phó.',
+            ]), 'outro', 0);
+        }
     } else {
         $end[] = vb_cue(vb_pick('advice-far', [
             'Chúng tôi sẽ tiếp tục theo dõi và cập nhật diễn biến của ' . $title . ' trong các bản tin sau.',
@@ -1434,6 +1672,7 @@ function vb_build_bulletin(array $storm, $conn = null) {
         'rank'       => $rank,
         'history'    => $hist,
         'seq'        => $seq,
+        'geo'        => $geo,
     ];
 }
 
@@ -1740,6 +1979,18 @@ function vbf_plan(array $c, $d, array $P) {
                 $plan['total'] = 1.6;
             }
             break;
+        case 'shift':
+            if (vbf_hasxy($p)) {
+                $plan['segs'][] = ['t' => 0.0, 'dur' => 1.2, 'cam' => vbf_cam_close($p, $P['galeMax'], true)];
+                $plan['total'] = 1.8;
+            }
+            break;
+        case 'pressure':
+            if (vbf_hasxy($p) && ($p['pres'] ?? null) !== null) {
+                $plan['segs'][] = ['t' => 0.0, 'dur' => 1.2, 'cam' => vbf_cam_close($p, $P['galeMax'], true)];
+                $plan['total'] = 1.8;
+            }
+            break;
         case 'radius7':
         case 'radius10':
             $level = $act === 'radius7' ? 7 : 10;
@@ -1827,6 +2078,8 @@ function vbf_finish(array &$S, array $c, array $plan, array $P) {
             $S['info'] = [$c['pt'], false];
             break;
         case 'wind':
+        case 'pressure':
+        case 'shift':
             if ($p) $S['info'] = [$c['pt'], true];
             break;
         case 'radius7':
@@ -1913,6 +2166,18 @@ function vbf_assemble(array $S, array $c, array $plan, $t, array $P) {
                 if (vbf_hasxy($p) && $p['lv'] !== null) $st['fx']['wind'] = ['pt' => $c['pt'], 't' => $t];
             }
             break;
+        case 'shift':
+            if ($p) {
+                $st['info'] = [$c['pt'], true];
+                if (vbf_hasxy($p) && !empty($c['shift'])) $st['fx']['shift'] = ['pt' => $c['pt'], 't' => $t, 'd' => $c['shift']];
+            }
+            break;
+        case 'pressure':
+            if ($p) {
+                $st['info'] = [$c['pt'], true];
+                if (vbf_hasxy($p) && ($p['pres'] ?? null) !== null) $st['fx']['pressure'] = ['pt' => $c['pt'], 't' => $t];
+            }
+            break;
         case 'radius7':
         case 'radius10':
             if (!$plan['anim']) break;
@@ -1928,13 +2193,13 @@ function vbf_assemble(array $S, array $c, array $plan, $t, array $P) {
             if (!vbf_hasxy($p) || !$L || $t < $plan['t_after']) break;
             if (!empty($L['onLand'])) {
                 $st['fx']['hlProv'] = $L['prov'];
-                $st['fx']['label'] = ['lat' => $p['lat'], 'lon' => $p['lon'], 'text' => 'Trên đất liền ' . ($L['provShort'] ?? $L['prov'])];
+                $st['fx']['label'] = ['lat' => $p['lat'], 'lon' => $p['lon'], 'text' => 'Trên đất liền ' . ($L['provFull'] ?? $L['provShort'] ?? $L['prov'])];
             } else {
                 $st['fx']['hlProv'] = $L['prov'];
                 $k = vbf_ease(vbf_prog($t, $plan['anim']['t0'], $plan['anim']['dur']));
                 $st['fx']['line'] = [$p['lat'], $p['lon'], $p['lat'] + ($L['lat'] - $p['lat']) * $k, $p['lon'] + ($L['lon'] - $p['lon']) * $k];
                 if ($t >= $plan['total']) {
-                    $st['fx']['coast'] = ['lat' => $L['lat'], 'lon' => $L['lon'], 'text' => $L['provShort'] ?? $L['prov']];
+                    $st['fx']['coast'] = ['lat' => $L['lat'], 'lon' => $L['lon'], 'text' => $L['provFull'] ?? $L['provShort'] ?? $L['prov']];
                     $st['fx']['dist'] = ['lat' => ($p['lat'] + $L['lat']) / 2, 'lon' => ($p['lon'] + $L['lon']) / 2, 'km' => $L['km']];
                 }
             }
@@ -2405,6 +2670,8 @@ class VbfRender {
             }
         }
         if (!empty($fx['wind'])) $this->windLabel($fx['wind'], $pts);
+        if (!empty($fx['pressure'])) $this->pressureLabel($fx['pressure'], $pts);
+        if (!empty($fx['shift'])) $this->shiftLabel($fx['shift'], $pts);
         if (!empty($fx['done'])) {
             [$x, $y] = $this->P($fx['done']['lat'], $fx['done']['lon']);
             $this->label($x + 30 * $k, $y, $fx['done']['text'], 16 * $k, '#fca5a5', 'l', '#ef4444');
@@ -2487,6 +2754,68 @@ class VbfRender {
             $this->dashed([$o, $tip], 3 * $k, 5 * $k, 1.5 * $k, $this->col($hex, 0.9));
             $this->label($tip[0], $tip[1] - 4 * $k, $e['txt'], 12 * $k, '#ffffff', 'c', $hex);
         }
+    }
+
+    // Thay đổi hướng / tốc độ / suy yếu: mũi tên xoay hoặc co giãn + nhãn.
+    private function shiftLabel(array $w, array $pts) {
+        $p = $pts[$w['pt']]; $d = $w['d']; $k = $this->k;
+        [$x, $y] = $this->P($p['lat'], $p['lon']);
+        $t = max(0, $w['t']);
+        $a = min(1, $t / 0.35);
+        $e = min(1, $t / 1.2); $e = $e * $e * (3 - 2 * $e);
+        $col = $d['col'] ?? '#a78bfa';
+        if ($d['kind'] === 'weaken') {
+            for ($i = 0; $i < 2; $i++) {
+                $ph = fmod($t + $i * 0.6, 1.2) / 1.2;
+                $this->ring($x, $y, (18 + $ph * 50) * $k, 2.5 * $k, $this->col($col, (1 - $ph) * 0.85));
+            }
+        } else {
+            $ang = deg2rad(($d['a0'] ?? 0) + (($d['a1'] ?? 0) - ($d['a0'] ?? 0)) * $e);
+            $len = (($d['l0'] ?? 60) + (($d['l1'] ?? 60) - ($d['l0'] ?? 60)) * $e) * $k;
+            $dx = sin($ang); $dy = -cos($ang);
+            $ex = $x + $dx * $len; $ey = $y + $dy * $len;
+            $this->polyline([[$x, $y], [$ex, $ey]], 5 * $k, $this->col($col, 0.95 * $a));
+            foreach ([150, -150] as $off) {
+                $hx = $ang + deg2rad($off);
+                $this->polyline([[$ex, $ey], [$ex + sin($hx) * 16 * $k, $ey - cos($hx) * 16 * $k]], 5 * $k, $this->col($col, 0.95 * $a));
+            }
+        }
+        $this->disc($x, $y, 10 * $k, $this->col($col, 0.9 * $a));
+        $bx = $x + 34 * $k;
+        $lines = [[$d['title'] ?? '', 12 * $k, false, '#cbd5e1'], [$d['lab'] ?? '', 22 * $k, true, '#ffffff']];
+        $wmax = 0; $h = 12 * $k;
+        foreach ($lines as $l) { $wmax = max($wmax, $this->tw($l[1], $l[2], $l[0])); $h += $l[1] * 1.2; }
+        $by = $y - $h / 2;
+        $this->rect($bx, $by, $wmax + 26 * $k, $h, $this->col('#050a14', 0.88 * $a));
+        $this->rect($bx, $by, 5 * $k, $h, $this->col($col, $a));
+        $cy = $by + 6 * $k;
+        foreach ($lines as $l) { $this->tx($l[1], $bx + 16 * $k, $cy, $this->col($l[3], $a), $l[2], $l[0]); $cy += $l[1] * 1.2; }
+    }
+
+    // Áp suất: các vòng đẳng áp co dần vào tâm bão + nhãn "Áp suất ... hPa".
+    private function pressureLabel(array $w, array $pts) {
+        $p = $pts[$w['pt']]; $k = $this->k;
+        [$x, $y] = $this->P($p['lat'], $p['lon']);
+        $t = max(0, $w['t']);
+        $a = min(1, $t / 0.35);
+        $col = '#38bdf8';
+        for ($i = 0; $i < 3; $i++) {
+            $off = $i * 0.5;
+            if ($t < $off) continue;
+            $ph = fmod($t - $off, 1.5) / 1.5;
+            $this->ring($x, $y, (64 - $ph * 52) * $k, 2.5 * $k, $this->col($col, sin($ph * M_PI) * 0.85));
+        }
+        $this->disc($x, $y, 10 * $k, $this->col($col, 0.9 * $a));
+        $bx = $x + 34 * $k;
+        $lines = [['Áp suất thấp nhất', 12 * $k, false, '#cbd5e1'], [$p['pres'] . ' hPa', 24 * $k, true, '#ffffff']];
+        $wmax = 0; $h = 12 * $k;
+        foreach ($lines as $l) { $wmax = max($wmax, $this->tw($l[1], $l[2], $l[0])); $h += $l[1] * 1.2; }
+        $wbox = $wmax + 26 * $k;
+        $by = $y - $h / 2;
+        $this->rect($bx, $by, $wbox, $h, $this->col('#050a14', 0.88 * $a));
+        $this->rect($bx, $by, 5 * $k, $h, $this->col($col, $a));
+        $cy = $by + 6 * $k;
+        foreach ($lines as $l) { $this->tx($l[1], $bx + 16 * $k, $cy, $this->col($l[3], $a), $l[2], $l[0]); $cy += $l[1] * 1.2; }
     }
 
     private function windLabel(array $w, array $pts) {
@@ -3067,6 +3396,7 @@ if (($_GET['api'] ?? '') === 'json') {
         'paragraphs' => $bulletin['paragraphs'],
         'text'       => implode("\n\n", $bulletin['paragraphs']),
         'player'     => $player,
+        'meta'       => vb_yt_meta($bulletin, $player),
     ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
 }
@@ -3102,13 +3432,41 @@ function vb_yt_meta(array $bulletin, array $player) {
     $when = (int)$d->format('G') . 'h ngày ' . $d->format('d/m');
     $year = $d->format('Y');
 
+    // Điểm nhấn địa lý (đưa lên tiêu đề để tăng CTR và khớp truy vấn "bão đổ bộ ...", "bão vào Biển Đông").
+    $geo = $bulletin['geo'] ?? [];
+    $min = $geo['min'] ?? null;
+    $hook = ''; $hookDesc = ''; $hookProv = '';
+    if (!empty($geo['nowOnLand'])) {
+        $hookProv = vb_prov_short($geo['nowOnLand']['prov']);
+        $hook = ' đang trên đất liền ' . $hookProv;
+        $hookDesc = 'tâm đang nằm trên đất liền ' . vb_prov_phrase($geo['nowOnLand']['prov'], $geo['nowOnLand']['type']);
+    } elseif (!empty($geo['landfall'])) {
+        $hookProv = vb_prov_short($geo['landfall']['prov']);
+        $hook = ' dự báo đổ bộ ' . $hookProv;
+        $hookDesc = 'dự báo đi vào đất liền ' . vb_prov_phrase($geo['landfall']['prov'], $geo['landfall']['type'])
+            . (!empty($geo['landfall']['ts']) ? ' khoảng ' . vb_time_short($geo['landfall']['ts']) : '');
+    } elseif (!empty($geo['fcSCS']) && empty($geo['nowSCS'])) {
+        $hook = ' sắp vào Biển Đông';
+        $hookDesc = 'dự báo sẽ đi vào Biển Đông';
+    } elseif ($min && $min['k'] === 0 && $min['km'] <= 500) {
+        $hookProv = vb_prov_short($min['prov']);
+        $hook = ' cách ' . $hookProv . ' ' . vb_km_text($min['km']) . ' km';
+        $hookDesc = 'cách đất liền ' . vb_prov_phrase($min['prov'], $min['type']) . ' khoảng ' . vb_km_text($min['km']) . ' km';
+    } elseif (!empty($geo['nowSCS'])) {
+        $hook = ' trên Biển Đông';
+        $hookDesc = 'đang hoạt động trên Biển Đông';
+    }
+    $inSCS = !empty($geo['nowSCS']) || !empty($geo['fcSCS']);
+
+    // Từ khóa chính ("Bão X") đứng đầu tiêu đề; thời điểm cập nhật ở cuối.
     $title = '';
-    foreach ([
-        "Tin bão mới nhất: {$subject}{$lvTxt} - Vị trí, đường đi và dự báo ({$when})",
-        "Tin bão mới nhất: {$subject}{$lvTxt} - Đường đi và dự báo ({$when})",
-        "{$subject}{$lvTxt} - Đường đi và dự báo mới nhất ({$when})",
+    foreach (array_unique([
+        "{$subject}{$lvTxt}{$hook} - Tin bão mới nhất, dự báo đường đi ({$when})",
+        "{$subject}{$lvTxt}{$hook} - Tin bão mới nhất ({$when})",
+        "{$subject}{$lvTxt}{$hook} - Dự báo đường đi mới nhất",
+        "{$subject}{$lvTxt} - Tin bão mới nhất, dự báo đường đi ({$when})",
         "{$subject}{$lvTxt} - Dự báo đường đi mới nhất",
-    ] as $t) {
+    ]) as $t) {
         if (mb_strlen($t) <= 100) { $title = $t; break; }
     }
     if ($title === '') $title = mb_substr("{$subject}{$lvTxt} - Dự báo đường đi mới nhất", 0, 100);
@@ -3121,31 +3479,71 @@ function vb_yt_meta(array $bulletin, array $player) {
         if (mb_strlen($body) + mb_strlen($p) > 2600) break;
         $body .= ($body === '' ? '' : "\n\n") . $p;
     }
+
+    // Dòng đầu (~150 ký tự đầu hiện trên kết quả tìm kiếm): tóm tắt số liệu chính.
+    $facts = [];
+    if ($cur && $cls !== 'tan') {
+        if ($cur['lv'] !== null) $facts[] = 'gió mạnh nhất cấp ' . (int)$cur['lv'];
+        if ($g = vb_gust_text($cur['gust'])) $facts[] = 'giật ' . $g;
+        if ($cur['pres'] !== null) $facts[] = 'áp suất ' . $cur['pres'] . ' hPa';
+        $mp = $cur['mp'] ?? null;
+        if ($mp && !$mp['stationary'] && ($mp['dir'] || $mp['kmh'])) {
+            $facts[] = 'di chuyển' . ($mp['dir'] ? ' hướng ' . $mp['dir'] : '') . ($mp['kmh'] ? ' ' . $mp['kmh'] . ' km/h' : '');
+        } elseif ($mp && $mp['stationary']) {
+            $facts[] = 'gần như đứng yên';
+        }
+    }
+    if ($hookDesc !== '') $facts[] = $hookDesc;
+    $lead = $subject . ($no !== '' && $name !== '' ? ' (số hiệu ' . $no . ')' : '')
+        . ($cur && $cur['ts'] ? ' lúc ' . vb_time_short($cur['ts']) : '')
+        . ($facts ? ': ' . implode(', ', $facts) : '') . '.';
+
+    $enKind = in_array($cls, ['bão', 'siêu bão'], true) ? 'Typhoon' : ($cls === 'áp thấp nhiệt đới' ? 'Tropical Depression' : 'Tropical Cyclone');
+    $enName = $name !== '' ? mb_strtoupper($name) : $no;
+    $en = trim("{$enKind} {$enName}") . ($no !== '' && $name !== '' ? " ({$no})" : '')
+        . ' - latest track, intensity and forecast from JMA, updated ' . $d->format('Y-m-d H:i') . ' (UTC+7).';
+
+    $hashtags = array_filter([
+        $tagName !== '' ? '#Bão' . $tagName : null,
+        '#TinBão',
+        $inSCS ? '#BiểnĐông' : '#DựBáoThờiTiết',
+        $name !== '' ? '#Typhoon' . $tagName : null,
+    ]);
     $lines = [
-        "{$subject}{$lvTxt}: cập nhật vị trí tâm bão, sức gió, vùng gió mạnh và dự báo đường đi mới nhất"
-            . ($cur && $cur['ts'] ? ' lúc ' . vb_time_text($cur['ts']) . ' (giờ Việt Nam)' : '') . '.',
-        'Chi tiết về cơn bão ' . $label . ' có thể xem chi tiết tại: https://nangmua.vn/ty',
+        $lead,
+        'Cập nhật vị trí tâm bão, sức gió, áp suất, vùng gió mạnh và dự báo đường đi mới nhất (giờ Việt Nam).',
+        'Chi tiết về cơn bão ' . $label . ' có thể xem tại: https://nangmua.vn/ty',
         '',
         'NỘI DUNG BẢN TIN:',
         $body,
         '',
         'Nguồn dữ liệu: Cơ quan Khí tượng Nhật Bản (JMA). Thời gian trong video là giờ Việt Nam.',
         'Theo dõi kênh để cập nhật nhanh nhất các bản tin bão, áp thấp nhiệt đới và dự báo thời tiết.',
+        $en,
         '',
-        implode(' ', array_filter([$tagName !== '' ? '#Bão' . $tagName : null, '#TinBão', '#DựBáoThờiTiết', $name !== '' ? '#Typhoon' . $tagName : null])),
+        implode(' ', $hashtags),
     ];
     $description = trim(implode("\n", $lines));
     while (strlen($description) > 4900) $description = mb_substr($description, 0, mb_strlen($description) - 200);
 
+    // Tag: cụ thể nhất trước (YouTube ưu tiên các tag đầu), chung chung sau.
     $raw = [];
     if ($name !== '') {
-        array_push($raw, "bão {$name}", $name, "typhoon {$name}", "tin bão {$name}", "bão {$name} mới nhất", "đường đi bão {$name}", "dự báo bão {$name}", "bão {$name} {$year}");
+        array_push($raw, "bão {$name}", $name, "typhoon {$name}", "tin bão {$name}", "bão {$name} mới nhất", "đường đi bão {$name}", "dự báo bão {$name}", "bão {$name} {$year}", "typhoon {$name} {$year}", "{$name} typhoon track");
+        if ($cls === 'siêu bão') $raw[] = "siêu bão {$name}";
+        if ($no !== '') $raw[] = "bão số hiệu {$no}";
     } elseif ($no !== '') {
-        array_push($raw, "bão {$no}", "tin bão {$no}");
+        array_push($raw, "bão {$no}", "tin bão {$no}", "bão số hiệu {$no}");
     }
+    if ($hookProv !== '') {
+        $raw[] = "bão {$hookProv}";
+        if (!empty($geo['nowOnLand']) || !empty($geo['landfall'])) $raw[] = "bão đổ bộ {$hookProv}";
+    }
+    if (!empty($geo['nowOnLand']) || !empty($geo['landfall'])) $raw[] = 'bão đổ bộ';
+    if ($inSCS) array_push($raw, 'bão biển Đông', 'biển Đông');
     if ($cls === 'siêu bão') array_push($raw, 'siêu bão', "siêu bão {$year}");
-    if ($cls === 'áp thấp nhiệt đới') $raw[] = 'áp thấp nhiệt đới';
-    array_push($raw, 'tin bão', 'tin bão mới nhất', 'bản tin bão', 'dự báo bão', 'đường đi của bão', "bão {$year}", 'dự báo thời tiết', 'thời tiết hôm nay', 'áp thấp nhiệt đới', 'biển Đông', 'JMA', 'nangmua');
+    if ($cls === 'áp thấp nhiệt đới') array_push($raw, 'áp thấp nhiệt đới', 'áp thấp nhiệt đới mới nhất');
+    array_push($raw, 'tin bão', 'tin bão mới nhất', 'tin bão hôm nay', 'bản tin bão', 'dự báo bão', 'đường đi của bão', 'bão mới nhất hôm nay', "bão {$year}", 'dự báo thời tiết', 'thời tiết hôm nay', 'áp thấp nhiệt đới', 'biển Đông', 'JMA', 'nangmua');
     $tags = []; $total = 0; $seen = [];
     foreach ($raw as $t) {
         $t = trim(vb_yt_clean($t));
@@ -3188,7 +3586,7 @@ function vb_yt_chapters(array $cues, array $starts, array $pts) {
         elseif (in_array('rank', $acts, true)) $title = 'Xếp hạng cường độ trong năm';
         elseif ($pt > 0) {
             $title = 'Dự báo ' . (!empty($pts[$pt]['time']) ? $pts[$pt]['time'] : 'tiếp theo');
-            if (!empty($land['land']['provShort'])) $title .= ' - đổ bộ ' . $land['land']['provShort'];
+            if (!empty($land['land']['onLand']) && !empty($land['land']['provShort'])) $title .= ' - trên đất liền ' . $land['land']['provShort'];
         } elseif (in_array('position', $acts, true) || in_array('dissipate', $acts, true)) { $isCur = true; $title = 'Vị trí và cường độ hiện tại'; }
         else $title = $isCur ? 'Diễn biến bão và hướng di chuyển' : 'Thông tin nổi bật';
         $t = $k === 0 ? 0.0 : $g['t'];
@@ -3325,6 +3723,23 @@ $ytMeta = $player ? vb_yt_meta($bulletin, $player) : null;
     @keyframes vbPulse { 0% { transform:scale(.25); opacity:1; } 100% { transform:scale(1.7); opacity:0; } }
     .vb-wind { position:absolute; left:0; top:0; transform: translate(-50%, calc(-100% - 34px)); }
     .vb-wind-in { transform-origin: 50% 100%; animation: vbWindPop 1.5s cubic-bezier(.2,.8,.2,1) forwards; background:rgba(5,10,20,.9); border:2px solid var(--c); border-radius:10px; padding:6px 14px; text-align:center; white-space:nowrap; color:#fff; font-family:"Be Vietnam Pro",sans-serif; box-shadow:0 6px 24px rgba(0,0,0,.5); }
+    .vb-pres { position:absolute; left:0; top:0; width:0; height:0; }
+    .vb-pres-ring { position:absolute; left:-60px; top:-60px; width:120px; height:120px; border-radius:50%; border:2.5px solid #38bdf8; opacity:0; animation: vbPresRing 1.5s ease-in infinite; }
+    .vb-pres-dot { position:absolute; left:-6px; top:-6px; width:12px; height:12px; border-radius:50%; background:#38bdf8; box-shadow:0 0 12px #38bdf8; }
+    .vb-pres-box { position:absolute; left:34px; top:0; transform:translateY(-50%); background:rgba(5,10,20,.9); border-left:5px solid #38bdf8; padding:6px 14px; white-space:nowrap; color:#fff; animation: vbFadeIn .4s ease-out forwards; }
+    .vb-pres-box small { display:block; font-size:12px; color:#cbd5e1; }
+    .vb-pres-box b { display:block; font-size:22px; line-height:1.15; font-weight:800; }
+    @keyframes vbPresRing { 0% { transform:scale(1); opacity:0; } 20% { opacity:.85; } 100% { transform:scale(.18); opacity:0; } }
+    .vb-shift { position:absolute; left:0; top:0; width:0; height:0; --c:#a78bfa; }
+    .vb-shift-arrow { position:absolute; left:-2.5px; top:0; width:5px; height:var(--l1); background:var(--c); border-radius:3px; transform-origin:50% 0; transform:rotate(calc(var(--a1) + 180deg)); animation: vbShiftTurn 1.4s ease-in-out both; }
+    .vb-shift-arrow::after { content:''; position:absolute; left:-7px; bottom:-10px; border-left:9.5px solid transparent; border-right:9.5px solid transparent; border-top:16px solid var(--c); }
+    .vb-shift-ring { position:absolute; left:-34px; top:-34px; width:68px; height:68px; border-radius:50%; border:2.5px solid var(--c); opacity:0; animation: vbShiftRing 1.2s ease-out infinite; }
+    .vb-shift-dot { position:absolute; left:-6px; top:-6px; width:12px; height:12px; border-radius:50%; background:var(--c); box-shadow:0 0 12px var(--c); }
+    .vb-shift-box { position:absolute; left:34px; top:0; transform:translateY(-50%); background:rgba(5,10,20,.9); border-left:5px solid var(--c); padding:6px 14px; white-space:nowrap; color:#fff; animation: vbFadeIn .4s ease-out forwards; }
+    .vb-shift-box small { display:block; font-size:12px; color:#cbd5e1; }
+    .vb-shift-box b { display:block; font-size:22px; line-height:1.15; font-weight:800; }
+    @keyframes vbShiftTurn { from { height:var(--l0); transform:rotate(calc(var(--a0) + 180deg)); } to { height:var(--l1); transform:rotate(calc(var(--a1) + 180deg)); } }
+    @keyframes vbShiftRing { 0% { transform:scale(.3); opacity:.9; } 100% { transform:scale(1.5); opacity:0; } }
     .vb-wind-in b { display:block; font-size:22px; line-height:1.15; color:var(--c); font-weight:800; }
     .vb-wind-in span { display:block; font-size:13px; font-weight:600; }
     .vb-wind-in small { display:block; font-size:11px; color:#cbd5e1; }
@@ -3684,7 +4099,7 @@ $ytMeta = $player ? vb_yt_meta($bulletin, $player) : null;
         <section class="card script" aria-labelledby="bt-title">
             <h2 id="bt-title">Kịch bản (mỗi đoạn = một cảnh, bấm vào câu để phát từ câu đó)</h2>
             <?php
-            $actLabel = ['intro' => 'đường đi', 'position' => 'vị trí', 'wind' => 'sức gió', 'radius7' => 'gió cấp 7', 'radius10' => 'gió cấp 10', 'move' => 'di chuyển', 'dissipate' => 'tan dần', 'land' => 'cách đất liền', 'greet' => 'lời chào', 'outro' => 'lời kết', 'history' => 'lịch sử tên', 'rank' => 'xếp hạng năm', 'info' => 'chữ'];
+            $actLabel = ['intro' => 'đường đi', 'position' => 'vị trí', 'wind' => 'sức gió', 'pressure' => 'áp suất', 'shift' => 'thay đổi', 'radius7' => 'gió cấp 7', 'radius10' => 'gió cấp 10', 'move' => 'di chuyển', 'dissipate' => 'tan dần', 'land' => 'cách đất liền', 'greet' => 'lời chào', 'outro' => 'lời kết', 'history' => 'lịch sử tên', 'rank' => 'xếp hạng năm', 'info' => 'chữ'];
             $ci = 0;
             foreach ($bulletin['scenes'] as $si => $scene): ?>
                 <p><span class="idx"><?= $si + 1 ?>.</span><?php foreach ($scene as $cue): ?><span class="cue" data-i="<?= $ci ?>" tabindex="0" role="button"><?= vb_e($cue['text']) ?><span class="tag"><?= vb_e($actLabel[$cue['act']] ?? $cue['act']) ?></span></span> <?php $ci++; endforeach; ?></p>
@@ -4076,6 +4491,29 @@ $ytMeta = $player ? vb_yt_meta($bulletin, $player) : null;
         L.marker(LL(p), { interactive: false, zIndexOffset: 2000, icon: L.divIcon({ className: '', iconSize: [0, 0], html }) }).addTo(fxLayer);
     }
 
+    function actShift(c, inst) {
+        const p = PTS[c.pt];
+        setInfo(p, true);
+        const d = c.shift;
+        if (inst || !d || !hasXY(p)) return;
+        camClose(p, true, 1.2);
+        const body = d.kind === 'weaken'
+            ? '<i class="vb-shift-ring"></i><i class="vb-shift-ring" style="animation-delay:.6s"></i>'
+            : `<i class="vb-shift-arrow" style="--a0:${d.a0}deg;--a1:${d.a1}deg;--l0:${d.l0}px;--l1:${d.l1}px"></i>`;
+        const html = `<div class="vb-shift" style="--c:${d.col}">${body}<i class="vb-shift-dot"></i><div class="vb-shift-box"><small>${d.title}</small><b>${d.lab}</b></div></div>`;
+        L.marker(LL(p), { interactive: false, zIndexOffset: 2000, icon: L.divIcon({ className: '', iconSize: [0, 0], html }) }).addTo(fxLayer);
+    }
+
+    function actPressure(c, inst) {
+        const p = PTS[c.pt];
+        setInfo(p, true);
+        if (inst || !hasXY(p) || p.pres === null || p.pres === undefined) return;
+        camClose(p, true, 1.2);
+        const rings = [0, 0.5, 1].map(d => `<i class="vb-pres-ring" style="animation-delay:${d}s"></i>`).join('');
+        const html = `<div class="vb-pres">${rings}<i class="vb-pres-dot"></i><div class="vb-pres-box"><small>Áp suất thấp nhất</small><b>${p.pres} hPa</b></div></div>`;
+        L.marker(LL(p), { interactive: false, zIndexOffset: 2000, icon: L.divIcon({ className: '', iconSize: [0, 0], html }) }).addTo(fxLayer);
+    }
+
     async function actRadius(c, level, inst) {
         const p = PTS[0], area = level === 7 ? D.gale : D.storm;
         if (!hasXY(p) || !area) return;
@@ -4141,7 +4579,7 @@ $ytMeta = $player ? vb_yt_meta($bulletin, $player) : null;
             return;
         }
         const coast = [d.lat, d.lon];
-        // Khung vừa đủ chứa tâm bão + điểm bờ gần nhất; gần bờ thì zoom sát hơn, xa thì lùi ra.
+        // Khung vừa đủ ch���a tâm bão + điểm bờ gần nhất; gần bờ thì zoom sát hơn, xa thì lùi ra.
         const b = L.latLngBounds([LL(p), coast]).pad(d.km < 150 ? 0.9 : 0.3);
         await camBounds(b, d.km < 150 ? 8 : 7.5, d.km > 1500 ? 1.8 : 1.3);
         if (tok !== token) return;
@@ -4241,6 +4679,8 @@ $ytMeta = $player ? vb_yt_meta($bulletin, $player) : null;
             case 'intro':     return actIntro(dur, inst);
             case 'position':  return actPosition(c, dur, inst);
             case 'wind':      return actWind(c, inst);
+            case 'pressure':  return actPressure(c, inst);
+            case 'shift':     return actShift(c, inst);
             case 'radius7':   return actRadius(c, 7, inst);
             case 'radius10':  return actRadius(c, 10, inst);
             case 'move':      return moveTo(c.from, c.pt, Math.max(1500, dur * 0.85), inst, c.tag);
@@ -4839,7 +5279,7 @@ $ytMeta = $player ? vb_yt_meta($bulletin, $player) : null;
         const surface = track.getSettings().displaySurface;
         if (surface && surface !== 'browser') {
             stream.getTracks().forEach(t => t.stop());
-            recStatus('Cần chọn chia sẻ đúng tab này (không chọn cửa sổ hay toàn màn hình).');
+            recStatus('Cần chọn chia sẻ đúng tab n��y (không chọn cửa sổ hay toàn màn hình).');
             return;
         }
 
@@ -4967,7 +5407,7 @@ $ytMeta = $player ? vb_yt_meta($bulletin, $player) : null;
         if (acts.includes('rank')) return 'Xếp hạng cường độ trong năm';
         if (pt > 0) {
             const base = 'Dự báo ' + (PTS[pt] && PTS[pt].time ? PTS[pt].time : 'tiếp theo');
-            return land && land.land && land.land.provShort ? base + ' - đổ bộ ' + land.land.provShort : base;
+            return land && land.land && land.land.onLand && land.land.provShort ? base + ' - trên đất liền ' + land.land.provShort : base;
         }
         if (acts.includes('position') || acts.includes('dissipate')) { state.cur = true; return 'Vị trí và cường độ hiện tại'; }
         return state.cur ? 'Hướng di chuyển hiện tại' : 'Thông tin nổi bật';
