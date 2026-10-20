@@ -39,15 +39,22 @@ jobs:
 
       - name: Tải ffmpeg static (có retry, nguồn dự phòng)
         if: steps.ffcache.outputs.cache-hit != 'true'
+        timeout-minutes: 8
         run: |
           mkdir -p ~/ffmpeg-bin /tmp/ff
-          curl -fL --retry 5 --retry-delay 5 --retry-all-errors \
-            -o /tmp/ff.tar.xz https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz \
-          || curl -fL --retry 5 --retry-delay 5 --retry-all-errors \
-            -o /tmp/ff.tar.xz https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
-          tar -xJf /tmp/ff.tar.xz -C /tmp/ff --strip-components=1
-          cp /tmp/ff/ffmpeg /tmp/ff/ffprobe ~/ffmpeg-bin/ 2>/dev/null \
-            || cp /tmp/ff/bin/ffmpeg /tmp/ff/bin/ffprobe ~/ffmpeg-bin/
+          CURL="curl -fsSL --connect-timeout 15 --max-time 180 --retry 3 --retry-delay 3 --retry-all-errors"
+          if $CURL -o /tmp/ff.tar.xz https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz \
+             || $CURL -o /tmp/ff.tar.xz https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz; then
+            tar -xJf /tmp/ff.tar.xz -C /tmp/ff --strip-components=1
+            cp /tmp/ff/bin/ffmpeg /tmp/ff/bin/ffprobe ~/ffmpeg-bin/ 2>/dev/null \
+              || cp /tmp/ff/ffmpeg /tmp/ff/ffprobe ~/ffmpeg-bin/
+          else
+            echo "Tải static thất bại, dùng apt làm dự phòng"
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends ffmpeg
+            cp "$(command -v ffmpeg)" "$(command -v ffprobe)" ~/ffmpeg-bin/
+          fi
+          ~/ffmpeg-bin/ffmpeg -version | head -1
 
       - name: Thêm ffmpeg vào PATH
         run: |
