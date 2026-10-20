@@ -30,10 +30,28 @@ jobs:
           tools: none
           coverage: none
 
-      - name: Cài ffmpeg bản static (có cache, không phụ thuộc thư viện hệ thống)
-        uses: FedericoCarboni/setup-ffmpeg@v3
+      - name: Cache ffmpeg static
+        id: ffcache
+        uses: actions/cache@v4
         with:
-          ffmpeg-version: release
+          path: ~/ffmpeg-bin
+          key: ffmpeg-static-amd64-v1
+
+      - name: Tải ffmpeg static (có retry, nguồn dự phòng)
+        if: steps.ffcache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/ffmpeg-bin /tmp/ff
+          curl -fL --retry 5 --retry-delay 5 --retry-all-errors \
+            -o /tmp/ff.tar.xz https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz \
+          || curl -fL --retry 5 --retry-delay 5 --retry-all-errors \
+            -o /tmp/ff.tar.xz https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          tar -xJf /tmp/ff.tar.xz -C /tmp/ff --strip-components=1
+          cp /tmp/ff/ffmpeg /tmp/ff/ffprobe ~/ffmpeg-bin/ 2>/dev/null \
+            || cp /tmp/ff/bin/ffmpeg /tmp/ff/bin/ffprobe ~/ffmpeg-bin/
+
+      - name: Thêm ffmpeg vào PATH
+        run: |
+          echo "$HOME/ffmpeg-bin" >> "$GITHUB_PATH"
 
       - name: Cài font tiếng Việt
         run: |
